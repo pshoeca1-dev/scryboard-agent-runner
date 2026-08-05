@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scryboard Agent Runner (proof of concept)</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: #1b1208; color: #e8dcc0; }
+  h1 { font-size: 1.1rem; margin-top: 0; }
+  p.hint { font-size: 0.85rem; color: #a8895c; }
+  #error { display: none; padding: 0.75rem; border-radius: 6px; margin: 1rem 0; background: #2c1a0c; color: #e08080; font-size: 0.85rem; }
+  #empty { color: #a8895c; font-size: 0.85rem; font-style: italic; }
+  .agent-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.75rem; background: #33200f; border: 1px solid #5a4020; border-radius: 6px; margin-bottom: 0.5rem; }
+  .agent-name { font-weight: 600; white-space: nowrap; }
+  .agent-detail { font-size: 0.8rem; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status-running { color: #a8c880; }
+  .status-working { color: #d4a840; }
+  .status-error { color: #e08080; }
+  .status-idle { color: #a8895c; }
+  button.small { padding: 0.25rem 0.6rem; font-size: 0.8rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  button.small:hover { background: #5a3a20; }
+  label { font-size: 0.85rem; color: #c0a276; display: block; margin-top: 1.25rem; }
+  input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.35rem; background: #2c1a0c; border: 1px solid #5a4020; color: #e8dcc0; border-radius: 4px; }
+  button#go { padding: 0.5rem 1rem; margin-top: 0.75rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+
+  #secretsOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
+  #secretsModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
+  #secretsModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
+  #secretsModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
+  .secret-help { font-size: 0.75rem; color: #a8895c; margin-top: 0.2rem; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
+  button#secretsCancel { padding: 0.5rem 1rem; background: transparent; border: 1px solid #5a4020; color: #a8895c; border-radius: 4px; cursor: pointer; }
+  button#secretsInstall { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>Scryboard Agent Runner — proof of concept</h1>
+  <p class="hint">
+    Installed agents keep running in the background and are remembered across restarts.
+    Supports a small set of pre-approved packages and prompts for any secrets an agent needs.
+    Still missing: code signing.
+  </p>
+
+  <div id="error"></div>
+
+  <div id="agentList"></div>
+  <p id="empty">Nothing installed yet.</p>
+
+  <label for="urlInput">Install with a scryboard-agent:// link (paste one, or this may pick it up
+    automatically if clicking "Run with Scryboard Agent Runner" worked):</label>
+  <input id="urlInput" placeholder="scryboard-agent://install?token=...&base=..." />
+  <button id="go">Install</button>
+
+  <div id="secretsOverlay">
+    <div id="secretsModal">
+      <h2 id="secretsTitle"></h2>
+      <p class="modal-hint">Stored securely on this computer, the same way your Scryboard token is — never sent anywhere except to whatever this agent actually calls.</p>
+      <div id="secretsFields"></div>
+      <div class="modal-actions">
+        <button id="secretsCancel">Cancel</button>
+        <button id="secretsInstall">Install</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const listEl = document.getElementById('agentList')
+    const emptyEl = document.getElementById('empty')
+    const errorEl = document.getElementById('error')
+
+    function statusLabel(agent) {
+      if (!agent.enabled) return 'Paused'
+      if (agent.status === 'working') return 'Running…'
+      if (agent.status === 'error') return 'Error: ' + agent.statusDetail
+      return agent.statusDetail || 'Starting…'
+    }
+
+    function statusClass(agent) {
+      if (!agent.enabled) return 'status-idle'
+      return 'status-' + agent.status
+    }
+
+    function render(agents) {
+      listEl.innerHTML = ''
+      emptyEl.style.display = agents.length === 0 ? 'block' : 'none'
+      for (const agent of agents) {
+        const row = document.createElement('div')
+        row.className = 'agent-row'
+
+        const name = document.createElement('span')
+        name.className = 'agent-name'
+        name.textContent = agent.name + (agent.version ? ' (v' + agent.version + ')' : '')
+
+        const detail = document.createElement('span')
+        detail.className = 'agent-detail ' + statusClass(agent)
+        detail.textContent = (agent.campaignName ? agent.campaignName + ' — ' : '') + statusLabel(agent)
+
+        const toggleBtn = document.createElement('button')
+        toggleBtn.className = 'small'
+        toggleBtn.textContent = agent.enabled ? 'Pause' : 'Resume'
+        toggleBtn.addEventListener('click', () => window.runner.setEnabled(agent.id, !agent.enabled))
+
+        const updateBtn = document.createElement('button')
+        updateBtn.className = 'small'
+        updateBtn.textContent = 'Update'
+        updateBtn.title = 'Re-pulls whatever version this agent\'s token currently resolves to on Scryboard'
+        updateBtn.addEventListener('click', () => {
+          errorEl.style.display = 'none'
+          updateBtn.disabled = true
+          updateBtn.textContent = 'Updating…'
+          window.runner.updateAgent(agent.id).finally(() => {
+            updateBtn.disabled = false
+            updateBtn.textContent = 'Update'
+          })
+        })
+
+        const removeBtn = document.createElement('button')
+        removeBtn.className = 'small'
+        removeBtn.textContent = 'Remove'
+        removeBtn.addEventListener('click', () => window.runner.removeAgent(agent.id))
+
+        row.appendChild(name)
+        row.appendChild(detail)
+        row.appendChild(toggleBtn)
+        row.appendChild(updateBtn)
+        row.appendChild(removeBtn)
+        listEl.appendChild(row)
+      }
+    }
+
+    window.runner.onAgentList((agents) => render(agents))
+    window.runner.onInstallError((message) => {
+      errorEl.style.display = 'block'
+      errorEl.textContent = message
+    })
+    window.runner.listAgents().then(render)
+
+    document.getElementById('go').addEventListener('click', () => {
+      const url = document.getElementById('urlInput').value.trim()
+      if (url) {
+        errorEl.style.display = 'none'
+        window.runner.manualInstall(url)
+      }
+    })
+
+    // ---- Secrets prompt ----
+    const secretsOverlay = document.getElementById('secretsOverlay')
+    const secretsTitle = document.getElementById('secretsTitle')
+    const secretsFields = document.getElementById('secretsFields')
+    let currentPendingId = null
+    let currentSecretKeys = []
+
+    function closeSecretsModal() {
+      secretsOverlay.style.display = 'none'
+      secretsFields.innerHTML = ''
+      currentPendingId = null
+      currentSecretKeys = []
+    }
+
+    window.runner.onSecretsNeeded((info) => {
+      errorEl.style.display = 'none'
+      currentPendingId = info.pendingId
+      currentSecretKeys = info.secrets.map((s) => s.key)
+      secretsTitle.textContent = '"' + info.agentName + '" needs:'
+      document.getElementById('secretsInstall').textContent = info.isUpdate ? 'Continue update' : 'Install'
+      secretsFields.innerHTML = ''
+      for (const secret of info.secrets) {
+        const label = document.createElement('label')
+        label.textContent = secret.label
+        const input = document.createElement('input')
+        input.type = 'password'
+        input.dataset.key = secret.key
+        label.appendChild(input)
+        secretsFields.appendChild(label)
+        if (secret.help) {
+          const help = document.createElement('p')
+          help.className = 'secret-help'
+          help.textContent = secret.help
+          secretsFields.appendChild(help)
+        }
+      }
+      secretsOverlay.style.display = 'flex'
+    })
+
+    document.getElementById('secretsCancel').addEventListener('click', () => {
+      if (currentPendingId) window.runner.cancelInstall(currentPendingId)
+      closeSecretsModal()
+    })
+
+    document.getElementById('secretsInstall').addEventListener('click', () => {
+      const values = {}
+      for (const key of currentSecretKeys) {
+        const input = secretsFields.querySelector('input[data-key="' + key + '"]')
+        values[key] = input ? input.value : ''
+      }
+      const pendingId = currentPendingId
+      closeSecretsModal()
+      window.runner.completeInstall(pendingId, values)
+    })
+  </script>
+</body>
+</html>

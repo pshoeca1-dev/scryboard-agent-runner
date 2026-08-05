@@ -1,0 +1,61 @@
+{
+  "name": "scryboard-agent-runner",
+  "version": "0.1.1-proof-of-concept",
+  "private": true,
+  "description": "Desktop app that runs Node-CLI Scryboard agents without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-agent management get built on top of it. 0.1.1 adds updating an installed agent in place, without losing its token.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.0",
+    "date-fns": "^3.6.0",
+    "fflate": "^0.8.2",
+    "jimp": "^0.22.12",
+    "pdf-parse": "^1.1.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  },
+  "build": {
+    "appId": "com.scryboard.agentrunner",
+    "productName": "Scryboard Agent Runner",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "agent-runner.js",
+      "scryboard-client.js",
+      "store.js",
+      "index.html",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "protocols": [
+      {
+        "name": "Scryboard Agent Install",
+        "schemes": [
+          "scryboard-agent"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
