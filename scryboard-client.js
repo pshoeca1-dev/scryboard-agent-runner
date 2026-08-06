@@ -51,12 +51,12 @@ function createClient({ token, baseUrl }) {
     return sessions.find((s) => s.status === 'active') ?? null
   }
 
-  async function pushWidget({ widget, output_type, content, placement = 'session_sidebar', visibility = 'dm', session_id = null }) {
+  async function pushWidget({ widget, layout, placement = 'session_dashboard', visibility = 'dm', session_id = null }) {
     if (!widget) throw new Error('pushWidget needs a `widget` name')
-    if (!output_type) throw new Error('pushWidget needs an `output_type`')
+    if (!layout) throw new Error('pushWidget needs a `layout`')
     return request('/api/agent/widgets', {
       method: 'POST',
-      body: JSON.stringify({ widget, output_type, content, placement, visibility, session_id }),
+      body: JSON.stringify({ widget, layout, placement, visibility, session_id }),
     })
   }
 
