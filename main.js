@@ -12,9 +12,28 @@
 //
 // Still not here: code signing.
 
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification } = require('electron')
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require('electron')
 const path = require('node:path')
 const { AgentManager } = require('./agent-runner')
+
+// Electron's file dialog filters on extensions, not the MIME types a
+// manifest declares in `accept` -- this is the (small, known) translation
+// between the two. Anything not in this map is dropped from the filter
+// rather than failing the dialog outright; an unrecognized MIME type just
+// means "no extension filter for that one," not "reject the picker."
+const MIME_TO_EXTENSIONS = {
+  'application/pdf': ['pdf'],
+  'image/jpeg': ['jpg', 'jpeg'],
+  'image/png': ['png'],
+  'image/gif': ['gif'],
+  'image/webp': ['webp'],
+}
+
+function acceptToFilters(accept) {
+  const extensions = [...new Set((accept || []).flatMap((m) => MIME_TO_EXTENSIONS[m] || []))]
+  if (extensions.length === 0) return [{ name: 'All files', extensions: ['*'] }]
+  return [{ name: 'Supported files', extensions }]
+}
 
 const PROTOCOL = 'scryboard-agent'
 
@@ -217,15 +236,41 @@ ipcMain.handle('manual-install', (_event, url) => handleInstallUrl(url))
 ipcMain.handle('list-agents', () => (manager ? manager.list() : []))
 ipcMain.handle('remove-agent', (_event, id) => manager.remove(id))
 ipcMain.handle('set-enabled', (_event, id, enabled) => manager.setEnabled(id, enabled))
-ipcMain.handle('complete-install', async (_event, pendingId, secretValues) => {
+ipcMain.handle('complete-install', async (_event, pendingId, secretValues, inputFiles) => {
   try {
-    const list = await manager.completeInstall(pendingId, secretValues)
+    const list = await manager.completeInstall(pendingId, secretValues, inputFiles)
     sendAgentList(list)
   } catch (err) {
     sendInstallError(err.message)
   }
 })
 ipcMain.handle('cancel-install', (_event, pendingId) => manager.cancelInstall(pendingId))
+
+// Must run in the main process -- the renderer never gets raw filesystem
+// access, same posture as every other Electron app. Returns the picked
+// absolute paths (or an empty array if the buyer cancelled); the renderer
+// only ever sees filenames for display, never touches the files itself.
+ipcMain.handle('choose-input-files', async (_event, { accept, multiple }) => {
+  const properties = ['openFile']
+  if (multiple) properties.push('multiSelections')
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties,
+    filters: acceptToFilters(accept),
+  })
+  if (result.canceled) return []
+  return result.filePaths
+})
+
+// Standalone re-pick, outside the install/update flow -- the "Files"
+// button on an already-installed agent's row.
+ipcMain.handle('update-agent-inputs', async (_event, id, key, filePaths) => {
+  try {
+    const list = await manager.updateAgentInputFiles(id, key, filePaths)
+    sendAgentList(list)
+  } catch (err) {
+    sendInstallError(err.message)
+  }
+})
 ipcMain.handle('update-agent', async (_event, id) => {
   try {
     const result = await manager.updateAgent(id)

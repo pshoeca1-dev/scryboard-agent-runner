@@ -32,6 +32,55 @@ function stripCommonRoot(files) {
   return Object.fromEntries(paths.map((p) => [p.slice(root.length), files[p]]))
 }
 
+// Total bytes a single declared input may add up to across all its picked
+// files -- generous enough for a real multi-photo character sheet, bounded
+// enough that picking the wrong folder fails fast instead of silently
+// copying gigabytes.
+const MAX_INPUT_BYTES = 25 * 1024 * 1024
+
+// Copies buyer-picked files into <agentDir>/input/<key>/, replacing
+// whatever was there for that key. This is the whole mechanism -- an
+// agent that already watches ./input/ next to itself (the folder-watch
+// pattern from the character-sheet agent) needs zero code changes beyond
+// pointing at the keyed subfolder, since nothing here talks to the agent's
+// code directly.
+async function copyPickedFiles(agentDir, key, filePaths) {
+  const destDir = path.join(agentDir, 'input', key)
+  await fs.rm(destDir, { recursive: true, force: true }).catch(() => {})
+  if (!filePaths || filePaths.length === 0) return
+  await fs.mkdir(destDir, { recursive: true })
+
+  let total = 0
+  for (const src of filePaths) {
+    const stat = await fs.stat(src)
+    total += stat.size
+    if (total > MAX_INPUT_BYTES) {
+      await fs.rm(destDir, { recursive: true, force: true }).catch(() => {})
+      throw new Error(`Selected files are too large (max ${Math.round(MAX_INPUT_BYTES / 1024 / 1024)}MB total).`)
+    }
+    await fs.copyFile(src, path.join(destDir, path.basename(src)))
+  }
+}
+
+// An update overwrites an agent's own code, but a buyer's already-picked
+// input files (and whatever the agent itself has written to remember
+// state, e.g. processed.json) must survive it -- losing your character
+// sheet because the agent's code got a bugfix would be a bad surprise.
+// Removes everything in the directory except input/ and the node_modules
+// package junction, rather than the previous wipe-then-rewrite-everything.
+async function clearAgentCodeFiles(dir) {
+  let entries
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    if (entry.name === 'input' || entry.name === 'node_modules') continue
+    await fs.rm(path.join(dir, entry.name), { recursive: true, force: true }).catch(() => {})
+  }
+}
+
 class AgentManager {
   constructor(onListChange) {
     this.records = []          // persisted fields plus transient status/statusDetail
@@ -79,6 +128,7 @@ class AgentManager {
       installedAt: r.installedAt,
       status: r.status || 'idle',
       statusDetail: r.statusDetail || '',
+      inputs: r.inputs || [],
     }))
   }
 
@@ -94,10 +144,17 @@ class AgentManager {
     await saveStore(this.records.map(({ status: _s, statusDetail: _sd, ...rest }) => rest))
   }
 
-  // Step 1: download and validate. If the agent needs secrets, this stops
-  // here and hands back what to ask for, rather than finishing the install
-  // -- the caller (main.js) is expected to prompt and call completeInstall.
-  // If it needs nothing, it finishes immediately, same as before.
+  // Step 1: download and validate. If the agent needs secrets or declares
+  // any inputs (files), this stops here and hands back what to ask for,
+  // rather than finishing the install -- the caller (main.js) is expected
+  // to prompt and call completeInstall. If it needs nothing, it finishes
+  // immediately, same as before.
+  //
+  // Inputs differ from secrets in one deliberate way: the prompt fires for
+  // ANY declared input, not just required ones. A required secret blocks
+  // install because the agent can't function without it; an optional file
+  // input is worth offering up front (skippable) rather than only
+  // surfacing once something's already broken.
   async beginInstall(rawUrl) {
     const parsed = new URL(rawUrl)
     if (parsed.protocol.replace(':', '') !== 'scryboard-agent') {
@@ -131,8 +188,9 @@ class AgentManager {
     }
 
     const requiredSecrets = (manifest.secrets ?? []).filter((s) => s.required !== false)
-    if (requiredSecrets.length === 0) {
-      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues: {} })
+    const declaredInputs = manifest.inputs ?? []
+    if (requiredSecrets.length === 0 && declaredInputs.length === 0) {
+      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues: {}, inputFiles: {} })
     }
 
     const pendingId = crypto.randomUUID()
@@ -142,6 +200,14 @@ class AgentManager {
       pendingId,
       agentName,
       secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '' })),
+      inputs: declaredInputs.map((i) => ({
+        key: i.key,
+        label: i.label || i.key,
+        help: i.help || '',
+        accept: i.accept || [],
+        multiple: !!i.multiple,
+        required: i.required !== false,
+      })),
     }
   }
 
@@ -151,10 +217,11 @@ class AgentManager {
   // the renderer works for both a fresh install and an update that
   // introduced a new required secret, without the renderer needing to know
   // which one it's in.
-  async completeInstall(pendingId, secretValues) {
+  async completeInstall(pendingId, secretValues, inputFiles) {
     const pending = this.pendingInstalls.get(pendingId)
     if (!pending) throw new Error("This install request has expired -- try again.")
     this.pendingInstalls.delete(pendingId)
+    inputFiles = inputFiles || {}
 
     if (pending.updateId) {
       const record = this.records.find((r) => r.id === pending.updateId)
@@ -166,6 +233,14 @@ class AgentManager {
           throw new Error(`Missing a value for "${s.label || s.key}".`)
         }
       }
+      const requiredInputs = (pending.manifest.inputs ?? []).filter((i) => i.required !== false)
+      const dir = agentFilesDir(pending.updateId)
+      for (const i of requiredInputs) {
+        const alreadyHas = await this.hasInputFiles(dir, i.key)
+        if (!alreadyHas && !(inputFiles[i.key] && inputFiles[i.key].length > 0)) {
+          throw new Error(`Missing files for "${i.label || i.key}".`)
+        }
+      }
       const encryptedSecrets = { ...(record.encryptedSecrets || {}) }
       for (const [key, value] of Object.entries(secretValues || {})) {
         if (!value) continue
@@ -174,7 +249,7 @@ class AgentManager {
       }
       record.encryptedSecrets = encryptedSecrets
       this.secrets.set(pending.updateId, { ...existing, ...secretValues })
-      return this.finishUpdate(pending.updateId, pending)
+      return this.finishUpdate(pending.updateId, { ...pending, inputFiles })
     }
 
     const required = (pending.manifest.secrets ?? []).filter((s) => s.required !== false)
@@ -183,15 +258,30 @@ class AgentManager {
         throw new Error(`Missing a value for "${s.label || s.key}".`)
       }
     }
+    const requiredInputs = (pending.manifest.inputs ?? []).filter((i) => i.required !== false)
+    for (const i of requiredInputs) {
+      if (!inputFiles[i.key] || inputFiles[i.key].length === 0) {
+        throw new Error(`Missing files for "${i.label || i.key}".`)
+      }
+    }
 
-    return this.finishInstall({ ...pending, secretValues })
+    return this.finishInstall({ ...pending, secretValues, inputFiles })
+  }
+
+  async hasInputFiles(agentDir, key) {
+    try {
+      const entries = await fs.readdir(path.join(agentDir, 'input', key))
+      return entries.length > 0
+    } catch {
+      return false
+    }
   }
 
   cancelInstall(pendingId) {
     this.pendingInstalls.delete(pendingId)
   }
 
-  async finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues }) {
+  async finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues, inputFiles }) {
     const id = crypto.randomUUID()
     const dir = agentFilesDir(id)
     for (const [filePath, content] of Object.entries(files)) {
@@ -202,6 +292,10 @@ class AgentManager {
 
     if ((manifest.dependencies ?? []).length > 0) {
       await this.linkPackages(dir)
+    }
+
+    for (const [key, paths] of Object.entries(inputFiles || {})) {
+      await copyPickedFiles(dir, key, paths)
     }
 
     const encryptedSecrets = {}
@@ -219,6 +313,7 @@ class AgentManager {
       entry: manifest.entry,
       version: manifest.version || null,
       poll: manifest.poll || {},
+      inputs: manifest.inputs || [],
       encryptedToken: encryptToken(token),
       encryptedSecrets,
       enabled: true,
@@ -272,7 +367,15 @@ class AgentManager {
     const existingSecrets = this.secrets.get(id) || {}
     const requiredSecrets = (manifest.secrets ?? []).filter((s) => s.required !== false)
     const missingSecrets = requiredSecrets.filter((s) => !existingSecrets[s.key])
-    if (missingSecrets.length > 0) {
+
+    const requiredInputs = (manifest.inputs ?? []).filter((i) => i.required !== false)
+    const dir = agentFilesDir(id)
+    const missingInputs = []
+    for (const i of requiredInputs) {
+      if (!(await this.hasInputFiles(dir, i.key))) missingInputs.push(i)
+    }
+
+    if (missingSecrets.length > 0 || missingInputs.length > 0) {
       const pendingId = crypto.randomUUID()
       this.pendingInstalls.set(pendingId, { files, manifest, updateId: id })
       return {
@@ -281,22 +384,31 @@ class AgentManager {
         pendingId,
         agentName: record.name,
         secrets: missingSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '' })),
+        inputs: missingInputs.map((i) => ({
+          key: i.key,
+          label: i.label || i.key,
+          help: i.help || '',
+          accept: i.accept || [],
+          multiple: !!i.multiple,
+          required: true,
+        })),
       }
     }
 
     return this.finishUpdate(id, { files, manifest })
   }
 
-  // Overwrites the agent's own files with whatever the token currently
-  // resolves to. The whole directory is cleared first -- not just
-  // overwritten -- so a file removed in the new version can't linger and
-  // get imported by accident.
-  async finishUpdate(id, { files, manifest }) {
+  // Overwrites the agent's own code with whatever the token currently
+  // resolves to. Everything except input/ and node_modules is cleared
+  // first -- not just overwritten -- so a file removed in the new version
+  // can't linger and get imported by accident, while a buyer's
+  // already-picked input files and the shared package junction survive.
+  async finishUpdate(id, { files, manifest, inputFiles }) {
     const record = this.records.find((r) => r.id === id)
     if (!record) throw new Error('Agent no longer installed.')
 
     const dir = agentFilesDir(id)
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    await clearAgentCodeFiles(dir)
     for (const [filePath, content] of Object.entries(files)) {
       const dest = path.join(dir, filePath)
       await fs.mkdir(path.dirname(dest), { recursive: true })
@@ -305,12 +417,32 @@ class AgentManager {
     if ((manifest.dependencies ?? []).length > 0) {
       await this.linkPackages(dir)
     }
+    for (const [key, paths] of Object.entries(inputFiles || {})) {
+      await copyPickedFiles(dir, key, paths)
+    }
 
     record.entry = manifest.entry
     record.poll = manifest.poll || {}
     record.version = manifest.version || record.version || null
+    record.inputs = manifest.inputs || record.inputs || []
     await this.persist()
     this.setStatus(id, 'idle', `Updated to v${record.version || '?'}`)
+    return this.list()
+  }
+
+  // Standalone re-pick, outside the install/update flow entirely -- the
+  // actual answer to "how does a buyer update their character sheet
+  // later": pick new files, replace what's there, and clear the agent's
+  // own processed.json if it has one, since re-picking through this UI is
+  // an explicit "use this now" signal that should force a fresh pass even
+  // if the filename happens to be unchanged.
+  async updateAgentInputFiles(id, key, filePaths) {
+    const record = this.records.find((r) => r.id === id)
+    if (!record) throw new Error('Agent not found.')
+    const dir = agentFilesDir(id)
+    await copyPickedFiles(dir, key, filePaths)
+    await fs.rm(path.join(dir, 'processed.json'), { force: true }).catch(() => {})
+    this.setStatus(id, record.status || 'idle', record.statusDetail || '')
     return this.list()
   }
 

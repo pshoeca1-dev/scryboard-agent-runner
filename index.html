@@ -22,14 +22,23 @@
   input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.35rem; background: #2c1a0c; border: 1px solid #5a4020; color: #e8dcc0; border-radius: 4px; }
   button#go { padding: 0.5rem 1rem; margin-top: 0.75rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
 
-  #secretsOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
-  #secretsModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
-  #secretsModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
-  #secretsModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
+  #secretsOverlay, #filesOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
+  #secretsModal, #filesModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
+  #secretsModal h2, #filesModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
+  #secretsModal p.modal-hint, #filesModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
   .secret-help { font-size: 0.75rem; color: #a8895c; margin-top: 0.2rem; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
   button#secretsCancel { padding: 0.5rem 1rem; background: transparent; border: 1px solid #5a4020; color: #a8895c; border-radius: 4px; cursor: pointer; }
   button#secretsInstall { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+  button#filesClose { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+  .input-field { margin-top: 1.25rem; }
+  .input-field label { margin-top: 0; }
+  .input-field-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+  .input-not-required { font-size: 0.7rem; color: #6b5738; font-style: italic; }
+  button.choose-files { padding: 0.4rem 0.75rem; margin-top: 0.35rem; background: #33200f; border: 1px solid #5a4020; color: #c0a276; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+  button.choose-files:hover { background: #3d260f; }
+  .picked-files { font-size: 0.78rem; color: #a8c880; margin-top: 0.3rem; }
+  .picked-files.empty { color: #6b5738; font-style: italic; }
 </style>
 </head>
 <body>
@@ -53,11 +62,23 @@
   <div id="secretsOverlay">
     <div id="secretsModal">
       <h2 id="secretsTitle"></h2>
-      <p class="modal-hint">Stored securely on this computer, the same way your Scryboard token is — never sent anywhere except to whatever this agent actually calls.</p>
+      <p class="modal-hint">Secrets are stored securely on this computer, the same way your Scryboard token is — never sent anywhere except to whatever this agent actually calls. Files stay on this computer too; they're never uploaded to Scryboard.</p>
       <div id="secretsFields"></div>
+      <div id="inputsFields"></div>
       <div class="modal-actions">
         <button id="secretsCancel">Cancel</button>
         <button id="secretsInstall">Install</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="filesOverlay">
+    <div id="filesModal">
+      <h2 id="filesTitle"></h2>
+      <p class="modal-hint">Pick new files for this agent any time — this replaces what it currently has for that input, and the agent re-reads it on its next run.</p>
+      <div id="filesFields"></div>
+      <div class="modal-actions">
+        <button id="filesClose">Done</button>
       </div>
     </div>
   </div>
@@ -122,6 +143,16 @@
         row.appendChild(detail)
         row.appendChild(toggleBtn)
         row.appendChild(updateBtn)
+
+        if (agent.inputs && agent.inputs.length > 0) {
+          const filesBtn = document.createElement('button')
+          filesBtn.className = 'small'
+          filesBtn.textContent = 'Files'
+          filesBtn.title = 'Provide or change the file(s) this agent reads'
+          filesBtn.addEventListener('click', () => openFilesModal(agent))
+          row.appendChild(filesBtn)
+        }
+
         row.appendChild(removeBtn)
         listEl.appendChild(row)
       }
@@ -142,27 +173,97 @@
       }
     })
 
-    // ---- Secrets prompt ----
+    // ---- Shared: build one input's "Choose files" control ----
+    // selections is a plain object the caller owns; this just keeps it
+    // updated as the buyer picks files, and renders what's currently
+    // selected (or, for the standalone Files modal, already-saved).
+    function buildInputPicker(container, inputDef, selections, initialSummary) {
+      const wrap = document.createElement('div')
+      wrap.className = 'input-field'
+
+      const header = document.createElement('div')
+      header.className = 'input-field-header'
+      const label = document.createElement('span')
+      label.textContent = inputDef.label
+      header.appendChild(label)
+      if (inputDef.required === false) {
+        const optional = document.createElement('span')
+        optional.className = 'input-not-required'
+        optional.textContent = 'optional'
+        header.appendChild(optional)
+      }
+      wrap.appendChild(header)
+
+      if (inputDef.help) {
+        const help = document.createElement('p')
+        help.className = 'secret-help'
+        help.textContent = inputDef.help
+        wrap.appendChild(help)
+      }
+
+      const chooseBtn = document.createElement('button')
+      chooseBtn.className = 'choose-files'
+      chooseBtn.textContent = 'Choose files…'
+      wrap.appendChild(chooseBtn)
+
+      const pickedEl = document.createElement('p')
+      pickedEl.className = 'picked-files'
+      wrap.appendChild(pickedEl)
+
+      function renderPicked() {
+        const paths = selections[inputDef.key] || []
+        if (paths.length === 0) {
+          pickedEl.classList.add('empty')
+          pickedEl.textContent = initialSummary || 'No file selected yet.'
+        } else {
+          pickedEl.classList.remove('empty')
+          pickedEl.textContent = paths.map((p) => p.split(/[\\/]/).pop()).join(', ')
+        }
+      }
+      renderPicked()
+
+      chooseBtn.addEventListener('click', async () => {
+        const paths = await window.runner.chooseInputFiles(inputDef.accept, inputDef.multiple)
+        if (paths.length === 0) return // cancelled -- leave the existing selection alone
+        selections[inputDef.key] = paths
+        renderPicked()
+        if (wrap.dataset.immediate === 'true') wrap.dispatchEvent(new CustomEvent('picked', { detail: paths }))
+      })
+
+      container.appendChild(wrap)
+      return wrap
+    }
+
+    // ---- Secrets + inputs prompt (install time) ----
     const secretsOverlay = document.getElementById('secretsOverlay')
     const secretsTitle = document.getElementById('secretsTitle')
     const secretsFields = document.getElementById('secretsFields')
+    const inputsFields = document.getElementById('inputsFields')
     let currentPendingId = null
     let currentSecretKeys = []
+    let currentInputSelections = {}
+    let currentRequiredInputKeys = []
 
     function closeSecretsModal() {
       secretsOverlay.style.display = 'none'
       secretsFields.innerHTML = ''
+      inputsFields.innerHTML = ''
       currentPendingId = null
       currentSecretKeys = []
+      currentInputSelections = {}
+      currentRequiredInputKeys = []
     }
 
     window.runner.onSecretsNeeded((info) => {
       errorEl.style.display = 'none'
       currentPendingId = info.pendingId
       currentSecretKeys = info.secrets.map((s) => s.key)
+      currentInputSelections = {}
+      currentRequiredInputKeys = (info.inputs || []).filter((i) => i.required !== false).map((i) => i.key)
       secretsTitle.textContent = '"' + info.agentName + '" needs:'
       document.getElementById('secretsInstall').textContent = info.isUpdate ? 'Continue update' : 'Install'
       secretsFields.innerHTML = ''
+      inputsFields.innerHTML = ''
       for (const secret of info.secrets) {
         const label = document.createElement('label')
         label.textContent = secret.label
@@ -178,6 +279,9 @@
           secretsFields.appendChild(help)
         }
       }
+      for (const inputDef of info.inputs || []) {
+        buildInputPicker(inputsFields, inputDef, currentInputSelections)
+      }
       secretsOverlay.style.display = 'flex'
     })
 
@@ -187,14 +291,46 @@
     })
 
     document.getElementById('secretsInstall').addEventListener('click', () => {
+      const missing = currentRequiredInputKeys.filter((key) => !(currentInputSelections[key] || []).length)
+      if (missing.length > 0) {
+        errorEl.style.display = 'block'
+        errorEl.textContent = 'Choose files for every required input before continuing.'
+        return
+      }
       const values = {}
       for (const key of currentSecretKeys) {
         const input = secretsFields.querySelector('input[data-key="' + key + '"]')
         values[key] = input ? input.value : ''
       }
       const pendingId = currentPendingId
+      const inputFiles = currentInputSelections
       closeSecretsModal()
-      window.runner.completeInstall(pendingId, values)
+      window.runner.completeInstall(pendingId, values, inputFiles)
+    })
+
+    // ---- Standalone "Files" modal (post-install re-picking) ----
+    const filesOverlay = document.getElementById('filesOverlay')
+    const filesTitle = document.getElementById('filesTitle')
+    const filesFields = document.getElementById('filesFields')
+
+    function openFilesModal(agent) {
+      errorEl.style.display = 'none'
+      filesTitle.textContent = '"' + agent.name + '" files'
+      filesFields.innerHTML = ''
+      for (const inputDef of agent.inputs) {
+        const selections = {}
+        const wrap = buildInputPicker(filesFields, inputDef, selections, 'Already provided — pick again to replace.')
+        wrap.dataset.immediate = 'true'
+        wrap.addEventListener('picked', (event) => {
+          window.runner.updateAgentInputs(agent.id, inputDef.key, event.detail)
+        })
+      }
+      filesOverlay.style.display = 'flex'
+    }
+
+    document.getElementById('filesClose').addEventListener('click', () => {
+      filesOverlay.style.display = 'none'
+      filesFields.innerHTML = ''
     })
   </script>
 </body>
