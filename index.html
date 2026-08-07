@@ -22,10 +22,14 @@
   input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.35rem; background: #2c1a0c; border: 1px solid #5a4020; color: #e8dcc0; border-radius: 4px; }
   button#go { padding: 0.5rem 1rem; margin-top: 0.75rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
 
-  #secretsOverlay, #filesOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
-  #secretsModal, #filesModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
-  #secretsModal h2, #filesModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
-  #secretsModal p.modal-hint, #filesModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
+  #secretsOverlay, #filesOverlay, #folderOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
+  #secretsModal, #filesModal, #folderModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
+  #secretsModal h2, #filesModal h2, #folderModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
+  #secretsModal p.modal-hint, #filesModal p.modal-hint, #folderModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
+  #folderChosen { font-size: 0.8rem; color: #7fc98a; margin: 0.5rem 0 0; word-break: break-all; }
+  .agent-path { font-size: 0.72rem; color: #7f8a70; word-break: break-all; }
+  button#folderChoose { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+  button#folderCancel { padding: 0.5rem 1rem; background: transparent; border: 1px solid #5a4020; color: #a8895c; border-radius: 4px; cursor: pointer; }
   .secret-help { font-size: 0.75rem; color: #a8895c; margin-top: 0.2rem; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
   button#secretsCancel { padding: 0.5rem 1rem; background: transparent; border: 1px solid #5a4020; color: #a8895c; border-radius: 4px; cursor: pointer; }
@@ -72,6 +76,18 @@
     </div>
   </div>
 
+  <div id="folderOverlay">
+    <div id="folderModal">
+      <h2 id="folderTitle"></h2>
+      <p class="modal-hint">This is your own agent, so its code already lives on this computer — nothing gets downloaded. Point at the folder holding it (the one with scryboard.json in it) and it runs from there. Edit your code any time; the next run picks it up.</p>
+      <p id="folderChosen"></p>
+      <div class="modal-actions">
+        <button id="folderCancel">Cancel</button>
+        <button id="folderChoose">Choose folder…</button>
+      </div>
+    </div>
+  </div>
+
   <div id="filesOverlay">
     <div id="filesModal">
       <h2 id="filesTitle"></h2>
@@ -114,6 +130,17 @@
         const detail = document.createElement('span')
         detail.className = 'agent-detail ' + statusClass(agent)
         detail.textContent = (agent.campaignName ? agent.campaignName + ' — ' : '') + statusLabel(agent)
+        // Personal agents run from a folder the author owns -- worth
+        // showing, since "where is this actually running from" is
+        // otherwise invisible, and Remove leaves that folder alone.
+        if (agent.localPath) {
+          const pathEl = document.createElement('span')
+          pathEl.className = 'agent-path'
+          pathEl.textContent = 'your folder: ' + agent.localPath
+          pathEl.title = agent.localPath
+          detail.appendChild(document.createElement('br'))
+          detail.appendChild(pathEl)
+        }
 
         const toggleBtn = document.createElement('button')
         toggleBtn.className = 'small'
@@ -283,6 +310,38 @@
         buildInputPicker(inputsFields, inputDef, currentInputSelections)
       }
       secretsOverlay.style.display = 'flex'
+    })
+
+    // ---- Folder prompt (personal agents, which run from where they already live) ----
+    const folderOverlay = document.getElementById('folderOverlay')
+    const folderTitle = document.getElementById('folderTitle')
+    const folderChosen = document.getElementById('folderChosen')
+    let folderPendingId = null
+
+    window.runner.onFolderNeeded((info) => {
+      errorEl.style.display = 'none'
+      folderPendingId = info.pendingId
+      folderTitle.textContent = 'Where is "' + info.agentName + '" on this computer?'
+      folderChosen.textContent = ''
+      folderOverlay.style.display = 'flex'
+    })
+
+    document.getElementById('folderCancel').addEventListener('click', () => {
+      if (folderPendingId) window.runner.cancelInstall(folderPendingId)
+      folderPendingId = null
+      folderOverlay.style.display = 'none'
+    })
+
+    document.getElementById('folderChoose').addEventListener('click', async () => {
+      const chosen = await window.runner.chooseAgentFolder()
+      if (!chosen) return
+      folderChosen.textContent = chosen
+      const pendingId = folderPendingId
+      folderPendingId = null
+      folderOverlay.style.display = 'none'
+      // Either finishes the install outright, or comes back through
+      // onSecretsNeeded if the manifest in that folder asks for anything.
+      window.runner.provideAgentFolder(pendingId, chosen)
     })
 
     document.getElementById('secretsCancel').addEventListener('click', () => {

@@ -68,6 +68,49 @@ async function copyPickedFiles(agentDir, key, filePaths) {
 // sheet because the agent's code got a bugfix would be a bad surprise.
 // Removes everything in the directory except input/ and the node_modules
 // package junction, rather than the previous wipe-then-rewrite-everything.
+// Where an agent's code actually lives. A personal agent runs from the
+// folder the author already has on disk (see localPath below); everything
+// else runs from a copy this app downloaded and owns.
+function agentDirFor(record, id) {
+  return record.localPath || agentFilesDir(id)
+}
+
+// Newest mtime across an agent's own code, used to cache-bust the dynamic
+// import in runTick.
+//
+// Node caches ES modules by URL forever, so without this an agent keeps
+// running whatever code was loaded the first time -- which broke two
+// things quietly: a marketplace agent kept running its old version after
+// an update until the whole app was restarted, and a personal agent
+// running from a local folder would never pick up an edit at all,
+// defeating the point of pointing at the folder in the first place.
+// Keying the query string on mtime (rather than Date.now()) means
+// unchanged code still hits the module cache instead of leaking a fresh
+// module graph on every tick.
+async function maxCodeMtime(dir) {
+  let newest = 0
+  async function walk(current) {
+    let entries
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'input' || entry.name.startsWith('.')) continue
+      const full = path.join(current, entry.name)
+      if (entry.isDirectory()) {
+        await walk(full)
+      } else if (/\.(mjs|cjs|js|json)$/.test(entry.name)) {
+        const stat = await fs.stat(full).catch(() => null)
+        if (stat && stat.mtimeMs > newest) newest = stat.mtimeMs
+      }
+    }
+  }
+  await walk(dir)
+  return Math.round(newest)
+}
+
 async function clearAgentCodeFiles(dir) {
   let entries
   try {
@@ -129,6 +172,7 @@ class AgentManager {
       status: r.status || 'idle',
       statusDetail: r.statusDetail || '',
       inputs: r.inputs || [],
+      localPath: r.localPath || null,
     }))
   }
 
@@ -163,6 +207,33 @@ class AgentManager {
     const token = parsed.searchParams.get('token')
     const base = parsed.searchParams.get('base')
     if (!token || !base) throw new Error('Link is missing a token or base URL.')
+
+    // Ask what this token points at before fetching anything -- a personal
+    // agent's code is already on this machine, so downloading a copy of it
+    // would be a pointless round trip (and would mean every edit needed a
+    // re-upload before it took effect).
+    const infoRes = await fetch(`${base}/api/agent/info`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!infoRes.ok) {
+      const body = await infoRes.json().catch(() => ({}))
+      throw new Error(body.error || `Could not read that link (HTTP ${infoRes.status})`)
+    }
+    const info = (await infoRes.json()).data || {}
+
+    if (info.source === 'personal') {
+      const pendingId = crypto.randomUUID()
+      this.pendingInstalls.set(pendingId, {
+        token,
+        base,
+        agentName: info.agent_name || 'agent',
+        campaignName: info.campaign_name || '',
+      })
+      return {
+        needsFolder: true,
+        pendingId,
+        agentName: info.agent_name || 'agent',
+        campaignName: info.campaign_name || '',
+      }
+    }
 
     const res = await fetch(`${base}/api/agent/download`, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) {
@@ -281,13 +352,87 @@ class AgentManager {
     this.pendingInstalls.delete(pendingId)
   }
 
-  async finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues, inputFiles }) {
+  // Second half of a personal agent's install: the author has pointed at
+  // the folder their code already lives in, so read the manifest straight
+  // out of it. Nothing is copied anywhere -- the folder stays theirs, and
+  // this app only remembers where it is.
+  async provideAgentFolder(pendingId, folderPath) {
+    const pending = this.pendingInstalls.get(pendingId)
+    if (!pending) throw new Error('That install is no longer pending -- start again from the link.')
+    if (!folderPath) throw new Error('No folder chosen.')
+
+    let manifestSource
+    try {
+      manifestSource = await fs.readFile(path.join(folderPath, 'scryboard.json'), 'utf8')
+    } catch {
+      throw new Error("No scryboard.json in that folder -- pick the folder that holds your agent's code.")
+    }
+
+    let manifest
+    try {
+      manifest = JSON.parse(manifestSource)
+    } catch (err) {
+      throw new Error(`scryboard.json isn't valid JSON: ${err.message}`)
+    }
+
+    for (const dep of manifest.dependencies ?? []) {
+      if (!VETTED_PACKAGES.includes(dep)) {
+        throw new Error(`"${dep}" isn't a package this runner supports. Supported: ${VETTED_PACKAGES.join(', ')}.`)
+      }
+    }
+
+    const entryPath = path.join(folderPath, manifest.entry || '')
+    try {
+      await fs.access(entryPath)
+    } catch {
+      throw new Error(`Entry file "${manifest.entry}" isn't in that folder.`)
+    }
+
+    // Secrets still get asked for, but anything the author already has
+    // sitting in their own input/ folder counts as already provided --
+    // re-picking files they'd have to browse back to would be busywork.
+    const requiredSecrets = (manifest.secrets ?? []).filter((s) => s.required !== false)
+    const requiredInputs = []
+    for (const i of (manifest.inputs ?? []).filter((i) => i.required !== false)) {
+      if (!(await this.hasInputFiles(folderPath, i.key))) requiredInputs.push(i)
+    }
+
+    const next = { ...pending, manifest, localPath: folderPath }
+    this.pendingInstalls.set(pendingId, next)
+
+    if (requiredSecrets.length === 0 && requiredInputs.length === 0) {
+      this.pendingInstalls.delete(pendingId)
+      return { installed: await this.finishInstall({ ...next, secretValues: {}, inputFiles: {} }) }
+    }
+
+    return {
+      needsSecrets: true,
+      pendingId,
+      agentName: pending.agentName,
+      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '' })),
+      inputs: requiredInputs.map((i) => ({
+        key: i.key,
+        label: i.label || i.key,
+        help: i.help || '',
+        accept: i.accept || [],
+        multiple: !!i.multiple,
+        required: true,
+      })),
+    }
+  }
+
+  async finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues, inputFiles, localPath }) {
     const id = crypto.randomUUID()
-    const dir = agentFilesDir(id)
-    for (const [filePath, content] of Object.entries(files)) {
-      const dest = path.join(dir, filePath)
-      await fs.mkdir(path.dirname(dest), { recursive: true })
-      await fs.writeFile(dest, strFromU8(content))
+    // A personal agent runs where the author keeps it. Nothing is written
+    // into that folder except the packages junction and any input files
+    // they picked -- their own source is never touched.
+    const dir = localPath || agentFilesDir(id)
+    if (!localPath) {
+      for (const [filePath, content] of Object.entries(files)) {
+        const dest = path.join(dir, filePath)
+        await fs.mkdir(path.dirname(dest), { recursive: true })
+        await fs.writeFile(dest, strFromU8(content))
+      }
     }
 
     if ((manifest.dependencies ?? []).length > 0) {
@@ -314,6 +459,10 @@ class AgentManager {
       version: manifest.version || null,
       poll: manifest.poll || {},
       inputs: manifest.inputs || [],
+      // Set only for personal agents -- the folder the author keeps their
+      // code in. Its presence is what marks this agent as "runs from where
+      // it already lives" everywhere else in this file.
+      localPath: localPath || null,
       encryptedToken: encryptToken(token),
       encryptedSecrets,
       enabled: true,
@@ -344,6 +493,20 @@ class AgentManager {
     const token = this.tokens.get(id)
     if (!token) throw new Error('No credentials available -- try reinstalling.')
 
+    // A personal agent has no newer copy to fetch -- the folder it runs
+    // from is the source of truth, and edits there are already live on the
+    // next tick. Re-read the manifest in case poll/inputs/version changed,
+    // and leave the code alone.
+    if (record.localPath) {
+      let manifest
+      try {
+        manifest = JSON.parse(await fs.readFile(path.join(record.localPath, 'scryboard.json'), 'utf8'))
+      } catch {
+        throw new Error(`Couldn't read scryboard.json in ${record.localPath} -- has the folder moved?`)
+      }
+      return this.finishUpdate(id, { files: {}, manifest })
+    }
+
     const res = await fetch(`${record.baseUrl}/api/agent/download`, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
@@ -369,7 +532,7 @@ class AgentManager {
     const missingSecrets = requiredSecrets.filter((s) => !existingSecrets[s.key])
 
     const requiredInputs = (manifest.inputs ?? []).filter((i) => i.required !== false)
-    const dir = agentFilesDir(id)
+    const dir = agentDirFor(record, id)
     const missingInputs = []
     for (const i of requiredInputs) {
       if (!(await this.hasInputFiles(dir, i.key))) missingInputs.push(i)
@@ -407,12 +570,18 @@ class AgentManager {
     const record = this.records.find((r) => r.id === id)
     if (!record) throw new Error('Agent no longer installed.')
 
-    const dir = agentFilesDir(id)
-    await clearAgentCodeFiles(dir)
-    for (const [filePath, content] of Object.entries(files)) {
-      const dest = path.join(dir, filePath)
-      await fs.mkdir(path.dirname(dest), { recursive: true })
-      await fs.writeFile(dest, strFromU8(content))
+    const dir = agentDirFor(record, id)
+    // Never for a personal agent: that folder is the author's own working
+    // copy, and clearing it would delete the source they're editing.
+    // There's nothing to write there anyway -- their code is already the
+    // newest version of itself.
+    if (!record.localPath) {
+      await clearAgentCodeFiles(dir)
+      for (const [filePath, content] of Object.entries(files)) {
+        const dest = path.join(dir, filePath)
+        await fs.mkdir(path.dirname(dest), { recursive: true })
+        await fs.writeFile(dest, strFromU8(content))
+      }
     }
     if ((manifest.dependencies ?? []).length > 0) {
       await this.linkPackages(dir)
@@ -439,7 +608,7 @@ class AgentManager {
   async updateAgentInputFiles(id, key, filePaths) {
     const record = this.records.find((r) => r.id === id)
     if (!record) throw new Error('Agent not found.')
-    const dir = agentFilesDir(id)
+    const dir = agentDirFor(record, id)
     await copyPickedFiles(dir, key, filePaths)
     await fs.rm(path.join(dir, 'processed.json'), { force: true }).catch(() => {})
     this.setStatus(id, record.status || 'idle', record.statusDetail || '')
@@ -469,12 +638,18 @@ class AgentManager {
     this.timers.delete(id)
     this.tokens.delete(id)
     this.secrets.delete(id)
+    const record = this.records.find((r) => r.id === id)
     this.records = this.records.filter((r) => r.id !== id)
     await this.persist()
+    // Only ever deletes a copy this app made and owns. A personal agent's
+    // folder belongs to the person who wrote it -- removing it from this
+    // list means "stop running it," never "delete my source code."
     // Best-effort -- an in-flight tick for this id may still be running;
     // it'll find no matching record and just no-op harmlessly when it
     // finishes, rather than being force-cancelled mid-flight.
-    await fs.rm(agentFilesDir(id), { recursive: true, force: true }).catch(() => {})
+    if (!record?.localPath) {
+      await fs.rm(agentFilesDir(id), { recursive: true, force: true }).catch(() => {})
+    }
     this.onListChange(this.list())
   }
 
@@ -545,8 +720,13 @@ class AgentManager {
       const mySecrets = this.secrets.get(id) || {}
       for (const [key, value] of Object.entries(mySecrets)) process.env[key] = value
 
-      const entryFile = path.join(agentFilesDir(id), record.entry)
-      const mod = await import(pathToFileURL(entryFile).href)
+      const agentDir = agentDirFor(record, id)
+      const entryFile = path.join(agentDir, record.entry)
+      // ?v=<newest mtime> so edited code is actually picked up -- see
+      // maxCodeMtime. Without it Node serves the module it cached on the
+      // first tick forever.
+      const stamp = await maxCodeMtime(agentDir)
+      const mod = await import(`${pathToFileURL(entryFile).href}?v=${stamp}`)
       if (typeof mod.tick !== 'function') {
         throw new Error(`${record.entry} does not export an async tick(scryboard) function.`)
       }

@@ -133,7 +133,12 @@ function sendInstallError(message) {
 async function handleInstallUrl(rawUrl) {
   try {
     const result = await manager.beginInstall(rawUrl)
-    if (result && result.needsSecrets) {
+    if (result && result.needsFolder) {
+      // A personal agent -- nothing was downloaded, because its code is
+      // already on this machine. The renderer asks where, then calls
+      // provide-agent-folder below.
+      if (mainWindow) mainWindow.webContents.send('folder-needed', result)
+    } else if (result && result.needsSecrets) {
       // Doesn't finish here -- the renderer prompts for these, then calls
       // complete-install (below) with what was entered.
       if (mainWindow) mainWindow.webContents.send('secrets-needed', result)
@@ -245,6 +250,28 @@ ipcMain.handle('complete-install', async (_event, pendingId, secretValues, input
   }
 })
 ipcMain.handle('cancel-install', (_event, pendingId) => manager.cancelInstall(pendingId))
+
+// Folder picker for a personal agent's own code. Same shape as
+// choose-input-files: the renderer never sees or touches the path itself
+// beyond displaying it.
+ipcMain.handle('choose-agent-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
+  if (result.canceled) return null
+  return result.filePaths[0] ?? null
+})
+
+ipcMain.handle('provide-agent-folder', async (_event, pendingId, folderPath) => {
+  try {
+    const result = await manager.provideAgentFolder(pendingId, folderPath)
+    if (result && result.needsSecrets) {
+      if (mainWindow) mainWindow.webContents.send('secrets-needed', result)
+    } else if (result && result.installed) {
+      sendAgentList(result.installed)
+    }
+  } catch (err) {
+    sendInstallError(err.message)
+  }
+})
 
 // Must run in the main process -- the renderer never gets raw filesystem
 // access, same posture as every other Electron app. Returns the picked

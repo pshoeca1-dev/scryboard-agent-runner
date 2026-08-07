@@ -4,7 +4,10 @@ contextBridge.exposeInMainWorld('runner', {
   onAgentList: (callback) => ipcRenderer.on('agent-list', (_event, list) => callback(list)),
   onInstallError: (callback) => ipcRenderer.on('install-error', (_event, message) => callback(message)),
   onSecretsNeeded: (callback) => ipcRenderer.on('secrets-needed', (_event, info) => callback(info)),
+  onFolderNeeded: (callback) => ipcRenderer.on('folder-needed', (_event, info) => callback(info)),
   manualInstall: (url) => ipcRenderer.invoke('manual-install', url),
+  chooseAgentFolder: () => ipcRenderer.invoke('choose-agent-folder'),
+  provideAgentFolder: (pendingId, folderPath) => ipcRenderer.invoke('provide-agent-folder', pendingId, folderPath),
   completeInstall: (pendingId, secretValues, inputFiles) =>
     ipcRenderer.invoke('complete-install', pendingId, secretValues, inputFiles),
   cancelInstall: (pendingId) => ipcRenderer.invoke('cancel-install', pendingId),
