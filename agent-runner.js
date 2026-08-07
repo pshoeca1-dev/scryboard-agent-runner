@@ -512,11 +512,27 @@ class AgentManager {
     const client = createClient({ token, baseUrl: record.baseUrl })
 
     let sessionActive = false
+    let session = null
     try {
-      sessionActive = !!(await client.getActiveSession())
+      session = await client.getActiveSession()
+      sessionActive = !!session
     } catch {
       // Fall back to the slower cadence rather than spinning on a broken
       // token or connection.
+    }
+
+    // Only agents that opted into `poll.encounterSeconds` pay for this --
+    // it's an extra request every tick, and most agents don't read
+    // combatants at all (their token may not even have that scope).
+    let inEncounter = false
+    if (sessionActive && record.poll?.encounterSeconds) {
+      try {
+        const combatants = await client.get('combatants', { session_id: session.id })
+        inEncounter = Array.isArray(combatants) && combatants.length > 0
+      } catch {
+        // No combatants scope, or the call failed -- just run at the
+        // normal active cadence instead.
+      }
     }
 
     try {
@@ -545,7 +561,9 @@ class AgentManager {
     if (this.stopped.has(id)) return
     const activeMs = (record.poll?.activeSeconds ?? 30) * 1000
     const idleMs = (record.poll?.idleSeconds ?? 300) * 1000
-    const timer = setTimeout(() => this.runTick(id), sessionActive ? activeMs : idleMs)
+    const encounterMs = (record.poll?.encounterSeconds ?? record.poll?.activeSeconds ?? 30) * 1000
+    const delay = !sessionActive ? idleMs : inEncounter ? encounterMs : activeMs
+    const timer = setTimeout(() => this.runTick(id), delay)
     this.timers.set(id, timer)
   }
 }
