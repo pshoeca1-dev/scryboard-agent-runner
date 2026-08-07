@@ -388,19 +388,25 @@ class AgentManager {
       throw new Error(`Entry file "${manifest.entry}" isn't in that folder.`)
     }
 
-    // Secrets still get asked for, but anything the author already has
-    // sitting in their own input/ folder counts as already provided --
-    // re-picking files they'd have to browse back to would be busywork.
+    // Every declared input gets offered, not just the required ones --
+    // same as a marketplace install. An optional input is still usually
+    // the whole point of the agent (a character sheet to read, a file to
+    // watch); skipping the offer just because it's optional leaves you
+    // with an agent that runs perfectly and does nothing.
+    //
+    // The exception is an input the author already has files sitting in,
+    // inside their own folder -- that's already provided, and asking them
+    // to browse back to it would be busywork.
     const requiredSecrets = (manifest.secrets ?? []).filter((s) => s.required !== false)
-    const requiredInputs = []
-    for (const i of (manifest.inputs ?? []).filter((i) => i.required !== false)) {
-      if (!(await this.hasInputFiles(folderPath, i.key))) requiredInputs.push(i)
+    const promptInputs = []
+    for (const i of manifest.inputs ?? []) {
+      if (!(await this.hasInputFiles(folderPath, i.key))) promptInputs.push(i)
     }
 
     const next = { ...pending, manifest, localPath: folderPath }
     this.pendingInstalls.set(pendingId, next)
 
-    if (requiredSecrets.length === 0 && requiredInputs.length === 0) {
+    if (requiredSecrets.length === 0 && promptInputs.length === 0) {
       this.pendingInstalls.delete(pendingId)
       return { installed: await this.finishInstall({ ...next, secretValues: {}, inputFiles: {} }) }
     }
@@ -410,13 +416,13 @@ class AgentManager {
       pendingId,
       agentName: pending.agentName,
       secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '' })),
-      inputs: requiredInputs.map((i) => ({
+      inputs: promptInputs.map((i) => ({
         key: i.key,
         label: i.label || i.key,
         help: i.help || '',
         accept: i.accept || [],
         multiple: !!i.multiple,
-        required: true,
+        required: i.required !== false,
       })),
     }
   }
