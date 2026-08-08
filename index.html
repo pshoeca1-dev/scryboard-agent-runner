@@ -19,7 +19,10 @@
   button.small { padding: 0.25rem 0.6rem; font-size: 0.8rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; white-space: nowrap; }
   button.small:hover { background: #5a3a20; }
   label { font-size: 0.85rem; color: #c0a276; display: block; margin-top: 1.25rem; }
-  input { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.35rem; background: #2c1a0c; border: 1px solid #5a4020; color: #e8dcc0; border-radius: 4px; }
+  /* Deliberately not plain `input` -- this is the full-width text-field
+     look, and a checkbox picking it up gets stretched across its whole row,
+     which shoves the label off the edge and stops it shrinking back. */
+  input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.35rem; background: #2c1a0c; border: 1px solid #5a4020; color: #e8dcc0; border-radius: 4px; }
   button#go { padding: 0.5rem 1rem; margin-top: 0.75rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
 
   #secretsOverlay, #filesOverlay, #folderOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
