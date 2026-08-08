@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Scryboard Agent Runner (proof of concept)</title>
+<title>Scryboard App Runner (proof of concept)</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: #1b1208; color: #e8dcc0; }
   h1 { font-size: 1.1rem; margin-top: 0; }
@@ -53,10 +53,10 @@
 </style>
 </head>
 <body>
-  <h1>Scryboard Agent Runner — proof of concept</h1>
+  <h1>Scryboard App Runner — proof of concept</h1>
   <p class="hint">
-    Installed agents keep running in the background and are remembered across restarts.
-    Supports a small set of pre-approved packages and prompts for any secrets an agent needs.
+    Installed apps keep running in the background and are remembered across restarts.
+    Supports a small set of pre-approved packages and prompts for any secrets an app needs.
     Still missing: code signing.
   </p>
 
@@ -64,7 +64,7 @@
     <input type="checkbox" id="startOnLogin" />
     <span>
       <strong>Start automatically when I sign in</strong>
-      <span class="startup-hint">Your agents only run while this app is running. Leave this on and they keep working on their own — otherwise you'll need to open this app before your agents do anything.</span>
+      <span class="startup-hint">Your apps only run while this Runner is running. Leave this on and they keep working on their own — otherwise you'll need to open the Runner before your apps do anything.</span>
     </span>
   </label>
 
@@ -74,14 +74,14 @@
   <p id="empty">Nothing installed yet.</p>
 
   <label for="urlInput">Install with a scryboard-agent:// link (paste one, or this may pick it up
-    automatically if clicking "Run with Scryboard Agent Runner" worked):</label>
+    automatically if clicking "Run with Scryboard App Runner" worked):</label>
   <input id="urlInput" placeholder="scryboard-agent://install?token=...&base=..." />
   <button id="go">Install</button>
 
   <div id="secretsOverlay">
     <div id="secretsModal">
       <h2 id="secretsTitle"></h2>
-      <p class="modal-hint">Secrets are stored securely on this computer, the same way your Scryboard token is — never sent anywhere except to whatever this agent actually calls. Files stay on this computer too; they're never uploaded to Scryboard.</p>
+      <p class="modal-hint">Secrets are stored securely on this computer, the same way your Scryboard token is — never sent anywhere except to whatever this app actually calls. Files stay on this computer too; they're never uploaded to Scryboard.</p>
       <div id="secretsFields"></div>
       <div id="inputsFields"></div>
       <div class="modal-actions">
@@ -94,7 +94,7 @@
   <div id="folderOverlay">
     <div id="folderModal">
       <h2 id="folderTitle"></h2>
-      <p class="modal-hint">This is your own agent, so its code already lives on this computer — nothing gets downloaded. Point at the folder holding it (the one with scryboard.json in it) and it runs from there. Edit your code any time; the next run picks it up.</p>
+      <p class="modal-hint">This is your own app, so its code already lives on this computer — nothing gets downloaded. Point at the folder holding it (the one with scryboard.json in it) and it runs from there. Edit your code any time; the next run picks it up.</p>
       <p id="folderChosen"></p>
       <div class="modal-actions">
         <button id="folderCancel">Cancel</button>
@@ -106,7 +106,7 @@
   <div id="filesOverlay">
     <div id="filesModal">
       <h2 id="filesTitle"></h2>
-      <p class="modal-hint">Pick new files for this agent any time — this replaces what it currently has for that input, and the agent re-reads it on its next run.</p>
+      <p class="modal-hint">Pick new files for this app any time — this replaces what it currently has for that input, and the app re-reads it on its next run.</p>
       <div id="filesFields"></div>
       <div class="modal-actions">
         <button id="filesClose">Done</button>
@@ -165,7 +165,7 @@
         const updateBtn = document.createElement('button')
         updateBtn.className = 'small'
         updateBtn.textContent = 'Update'
-        updateBtn.title = 'Re-pulls whatever version this agent\'s token currently resolves to on Scryboard'
+        updateBtn.title = 'Re-pulls whatever version this app\'s token currently resolves to on Scryboard'
         updateBtn.addEventListener('click', () => {
           errorEl.style.display = 'none'
           updateBtn.disabled = true
@@ -190,7 +190,7 @@
           const filesBtn = document.createElement('button')
           filesBtn.className = 'small'
           filesBtn.textContent = 'Files'
-          filesBtn.title = 'Provide or change the file(s) this agent reads'
+          filesBtn.title = 'Provide or change the file(s) this app reads'
           filesBtn.addEventListener('click', () => openFilesModal(agent))
           row.appendChild(filesBtn)
         }

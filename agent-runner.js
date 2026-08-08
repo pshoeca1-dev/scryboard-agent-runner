@@ -296,7 +296,7 @@ class AgentManager {
 
     if (pending.updateId) {
       const record = this.records.find((r) => r.id === pending.updateId)
-      if (!record) throw new Error('Agent no longer installed.')
+      if (!record) throw new Error('App no longer installed.')
       const existing = this.secrets.get(pending.updateId) || {}
       const required = (pending.manifest.secrets ?? []).filter((s) => s.required !== false)
       for (const s of required) {
@@ -365,7 +365,7 @@ class AgentManager {
     try {
       manifestSource = await fs.readFile(path.join(folderPath, 'scryboard.json'), 'utf8')
     } catch {
-      throw new Error("No scryboard.json in that folder -- pick the folder that holds your agent's code.")
+      throw new Error("No scryboard.json in that folder -- pick the folder that holds your app's code.")
     }
 
     let manifest
@@ -495,7 +495,7 @@ class AgentManager {
   // itself never changes.
   async updateAgent(id) {
     const record = this.records.find((r) => r.id === id)
-    if (!record) throw new Error('Agent not found.')
+    if (!record) throw new Error('App not found.')
     const token = this.tokens.get(id)
     if (!token) throw new Error('No credentials available -- try reinstalling.')
 
@@ -574,7 +574,7 @@ class AgentManager {
   // already-picked input files and the shared package junction survive.
   async finishUpdate(id, { files, manifest, inputFiles }) {
     const record = this.records.find((r) => r.id === id)
-    if (!record) throw new Error('Agent no longer installed.')
+    if (!record) throw new Error('App no longer installed.')
 
     const dir = agentDirFor(record, id)
     // Never for a personal agent: that folder is the author's own working
@@ -613,7 +613,7 @@ class AgentManager {
   // if the filename happens to be unchanged.
   async updateAgentInputFiles(id, key, filePaths) {
     const record = this.records.find((r) => r.id === id)
-    if (!record) throw new Error('Agent not found.')
+    if (!record) throw new Error('App not found.')
     const dir = agentDirFor(record, id)
     await copyPickedFiles(dir, key, filePaths)
     await fs.rm(path.join(dir, 'processed.json'), { force: true }).catch(() => {})

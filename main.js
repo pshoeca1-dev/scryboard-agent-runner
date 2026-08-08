@@ -138,10 +138,10 @@ function updateTrayMenu(list) {
   if (!tray) return
   const agents = list ?? manager?.list() ?? []
   const running = agents.filter((a) => a.enabled && a.status !== 'error').length
-  tray.setToolTip(`Scryboard Agent Runner — ${running}/${agents.length} agent(s) running`)
+  tray.setToolTip(`Scryboard App Runner — ${running}/${agents.length} app(s) running`)
 
   const menu = Menu.buildFromTemplate([
-    { label: 'Open Scryboard Agent Runner', click: showWindow },
+    { label: 'Open Scryboard App Runner', click: showWindow },
     { type: 'separator' },
     {
       label: 'Start on login',
@@ -217,7 +217,7 @@ function createWindow() {
       hasShownTrayHint = true
       new Notification({
         title: 'Still running',
-        body: 'Scryboard Agent Runner keeps your agents running in the background. Right-click the tray icon to reopen or quit.',
+        body: 'Scryboard App Runner keeps your apps running in the background. Right-click the tray icon to reopen or quit.',
       }).show()
     }
   })
