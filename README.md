@@ -128,6 +128,26 @@ privilege a normal account doesn't have. That same step is what would
 normally put the icon on the `.exe`, so `scripts/after-pack.js` does the
 icon half on its own with `rcedit`.
 
+## Releasing
+
+`artifactName` in `package.json` pins the installer's filename to
+`Scryboard-App-Runner-Setup.exe`, with **no version in it**. That is
+load-bearing, not an oversight.
+
+The website's download button doesn't link to this repo's releases page — it
+links to `/download/runner`, which redirects to
+
+    https://github.com/pshoeca1-dev/scryboard-agent-runner/releases/latest/download/Scryboard-App-Runner-Setup.exe
+
+so a DM gets the installer itself instead of a GitHub page they have to know
+how to read. GitHub only resolves that URL when the filename is byte-identical
+in every release, so renaming the artifact silently breaks the download for
+everyone. If it ever has to change, change `RUNNER_ASSET_NAME` in the site's
+`src/lib/runner.ts` in the same commit.
+
+Each release should carry exactly one installer under that name. The version
+still lives in the release tag, the release title, and the app itself.
+
 ## What happens when you install an app
 
 1. Calls `/api/agent/download` with your token — the server looks up which

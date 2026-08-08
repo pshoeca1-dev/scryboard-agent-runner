@@ -57,6 +57,7 @@
       "icon": "assets/icon.ico",
       "signAndEditExecutable": false
     },
+    "artifactName": "Scryboard-App-Runner-Setup.${ext}",
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
