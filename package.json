@@ -1,8 +1,8 @@
 {
   "name": "scryboard-agent-runner",
-  "version": "0.1.1-proof-of-concept",
+  "version": "0.1.2-proof-of-concept",
   "private": true,
-  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.1 adds updating an installed app in place, without losing its token.",
+  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.2 renames the product to Scryboard App Runner, adds the real logo, and fixes the start-on-login checkbox layout.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
