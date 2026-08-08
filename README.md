@@ -109,8 +109,24 @@ prompt into the running agent's code.
 - **Unsigned.** Windows will likely warn about running software from an
   unknown publisher — expected until this is signed, which is deliberately
   a later step (see the code-signing discussion from earlier).
-- **The tray icon is a plain generated square**, not a real logo — it
-  proves the mechanism, not the final look.
+
+## The app icon
+
+`assets/icon.svg` is the source of truth. The PNGs and the `.ico` beside it
+are generated from it — after editing the SVG, run:
+
+    npm run build:icons
+
+That rasterizes the sizes the tray (16 and 32), the window (256), and the
+Windows installer (a 6-size `.ico`) each need. The generated files are
+committed, so a fresh clone builds without running this first.
+
+One wrinkle worth knowing: `signAndEditExecutable` is off in `package.json`,
+because electron-builder's signing toolchain can't unpack on Windows without
+Developer Mode enabled — it ships macOS symlinks, and creating those needs a
+privilege a normal account doesn't have. That same step is what would
+normally put the icon on the `.exe`, so `scripts/after-pack.js` does the
+icon half on its own with `rcedit`.
 
 ## What happens when you install an agent
 

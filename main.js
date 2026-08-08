@@ -91,24 +91,40 @@ function registerProtocolHandler() {
   }
 }
 
-// A small solid-color square, generated in code rather than shipped as an
-// image file -- keeps every file in this project plain, reviewable source,
-// nothing binary to just trust. Not meant to be a real logo, just enough
-// to prove a real, distinct tray icon actually appears.
-function createAppIcon() {
-  const size = 32
-  const buffer = Buffer.alloc(size * size * 4)
-  // BGRA byte order -- Electron's raw-bitmap convention on Windows/Linux.
-  // If this renders with an odd tint instead of gold, the order needs
-  // flipping to RGBA, but the icon will visibly appear as a distinct
-  // square either way -- that's what this step is actually proving.
-  for (let i = 0; i < size * size; i++) {
-    buffer[i * 4 + 0] = 0x40 // B
-    buffer[i * 4 + 1] = 0xa8 // G
-    buffer[i * 4 + 2] = 0xd4 // R -- 0xd4a840, the app's own gold
-    buffer[i * 4 + 3] = 0xff // A
+// The placeholder gold square this used to draw in code is gone -- it was
+// only ever there to prove a distinct tray icon appears. This is the real
+// logo. assets/icon.svg is the source of truth; the PNGs beside it are
+// generated from it by `npm run build:icons`, because nativeImage doesn't
+// read SVG.
+const ASSETS = path.join(__dirname, 'assets')
+
+function loadIcon(file) {
+  const image = nativeImage.createFromPath(path.join(ASSETS, file))
+  if (image.isEmpty()) {
+    // createFromPath returns a blank image rather than throwing, and a
+    // blank tray icon is invisible -- the app looks like it failed to
+    // start at all. Worth a line in the log rather than silence.
+    console.error(`Icon ${file} is missing or unreadable. Run \`npm run build:icons\`.`)
   }
-  return nativeImage.createFromBuffer(buffer, { width: size, height: size })
+  return image
+}
+
+// Windows draws the tray at 16px, or 32px on a HiDPI display. Supplying
+// both beats handing it one size and letting it rescale, which is where
+// tray icons usually turn to mush.
+function createTrayIcon() {
+  const icon = loadIcon('icon-16.png')
+  const hidpi = loadIcon('icon-32.png')
+  if (!icon.isEmpty() && !hidpi.isEmpty()) {
+    icon.addRepresentation({ scaleFactor: 2, buffer: hidpi.toPNG() })
+  }
+  return icon
+}
+
+// The taskbar and alt-tab pull from this one, both of which want something
+// considerably bigger than the tray does.
+function createWindowIcon() {
+  return loadIcon('icon-256.png')
 }
 
 function showWindow() {
@@ -175,7 +191,7 @@ async function handleInstallUrl(rawUrl) {
 }
 
 function createTray() {
-  tray = new Tray(createAppIcon())
+  tray = new Tray(createTrayIcon())
   tray.on('click', showWindow)
   updateTrayMenu(manager?.list() ?? [])
 }
@@ -184,7 +200,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 640,
     height: 560,
-    icon: createAppIcon(),
+    icon: createWindowIcon(),
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   })
   mainWindow.loadFile('index.html')

@@ -6,6 +6,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "build:icons": "electron scripts/build-icons.js",
     "dist": "electron-builder --win"
   },
   "dependencies": {
@@ -18,7 +19,8 @@
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "rcedit": "^5.0.2"
   },
   "allowScripts": {
     "electron@33.4.11": true
@@ -26,6 +28,7 @@
   "build": {
     "appId": "com.scryboard.agentrunner",
     "productName": "Scryboard Agent Runner",
+    "afterPack": "scripts/after-pack.js",
     "asar": false,
     "directories": {
       "output": "dist"
@@ -37,6 +40,7 @@
       "scryboard-client.js",
       "store.js",
       "index.html",
+      "assets/**/*",
       "node_modules/**/*",
       "package.json"
     ],
@@ -50,6 +54,7 @@
     ],
     "win": {
       "target": "nsis",
+      "icon": "assets/icon.ico",
       "signAndEditExecutable": false
     },
     "nsis": {
