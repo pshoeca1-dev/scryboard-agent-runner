@@ -15,6 +15,30 @@
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require('electron')
 const path = require('node:path')
 const { AgentManager } = require('./agent-runner')
+const { loadSettings, saveSettings } = require('./store')
+
+// Agents only tick while this app is running, so an app that isn't running
+// is indistinguishable from agents that quietly stopped working -- come
+// back to a campaign after a week away and your widgets are simply gone,
+// with nothing on screen explaining why. Starting with the machine is what
+// makes "it just keeps working" true, and it's the norm for background
+// apps of this kind.
+//
+// Applied once, on first run only, so turning it off afterwards sticks
+// instead of being re-enabled on every launch. The main window shows the
+// state and lets it be switched off -- silently adding yourself to
+// startup is exactly the behaviour that earns an app a bad reputation.
+async function applyStartOnLoginDefault() {
+  const settings = await loadSettings()
+  if (settings.loginDefaultApplied) return
+  try {
+    app.setLoginItemSettings({ openAtLogin: true })
+  } catch {
+    // Not fatal -- some environments don't allow it, and the app still
+    // works, it just won't start on its own.
+  }
+  await saveSettings({ ...settings, loginDefaultApplied: true })
+}
 
 // Electron's file dialog filters on extensions, not the MIME types a
 // manifest declares in `accept` -- this is the (small, known) translation
@@ -219,6 +243,8 @@ app.on('before-quit', () => {
 })
 
 app.whenReady().then(async () => {
+  await applyStartOnLoginDefault()
+
   manager = new AgentManager(sendAgentList)
   await manager.init() // resumes ticking every previously-installed, enabled agent
 
@@ -250,6 +276,15 @@ ipcMain.handle('complete-install', async (_event, pendingId, secretValues, input
   }
 })
 ipcMain.handle('cancel-install', (_event, pendingId) => manager.cancelInstall(pendingId))
+
+// Surfaced in the window as well as the tray menu -- an app that adds
+// itself to startup should say so somewhere you'd actually look.
+ipcMain.handle('get-start-on-login', () => app.getLoginItemSettings().openAtLogin)
+ipcMain.handle('set-start-on-login', (_event, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: !!enabled })
+  updateTrayMenu(manager?.list() ?? [])
+  return app.getLoginItemSettings().openAtLogin
+})
 
 // Folder picker for a personal agent's own code. Same shape as
 // choose-input-files: the renderer never sees or touches the path itself

@@ -26,6 +26,10 @@
   #secretsModal, #filesModal, #folderModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
   #secretsModal h2, #filesModal h2, #folderModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
   #secretsModal p.modal-hint, #filesModal p.modal-hint, #folderModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
+  #startOnLoginRow { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.7rem 0.85rem; margin-bottom: 1rem; background: #2c1a0c; border: 1px solid #5a4020; border-radius: 6px; cursor: pointer; }
+  #startOnLoginRow strong { display: block; font-size: 0.88rem; color: #e8dcc0; font-weight: 600; }
+  #startOnLoginRow input { margin-top: 0.2rem; accent-color: #c9a84c; flex-shrink: 0; }
+  .startup-hint { display: block; font-size: 0.78rem; color: #a8895c; margin-top: 0.15rem; line-height: 1.4; }
   #folderChosen { font-size: 0.8rem; color: #7fc98a; margin: 0.5rem 0 0; word-break: break-all; }
   .agent-path { font-size: 0.72rem; color: #7f8a70; word-break: break-all; }
   button#folderChoose { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
@@ -52,6 +56,14 @@
     Supports a small set of pre-approved packages and prompts for any secrets an agent needs.
     Still missing: code signing.
   </p>
+
+  <label id="startOnLoginRow">
+    <input type="checkbox" id="startOnLogin" />
+    <span>
+      <strong>Start automatically when I sign in</strong>
+      <span class="startup-hint">Your agents only run while this app is running. Leave this on and they keep working on their own — otherwise you'll need to open this app before your agents do anything.</span>
+    </span>
+  </label>
 
   <div id="error"></div>
 
@@ -310,6 +322,24 @@
         buildInputPicker(inputsFields, inputDef, currentInputSelections)
       }
       secretsOverlay.style.display = 'flex'
+    })
+
+    // ---- Start-on-login (defaults on at first install; see main.js) ----
+    const startOnLogin = document.getElementById('startOnLogin')
+    // Guarded so a failure here can't take down the handlers wired below
+    // it -- reading a checkbox state is not worth losing the install flow
+    // over.
+    Promise.resolve()
+      .then(() => window.runner.getStartOnLogin())
+      .then((enabled) => { startOnLogin.checked = !!enabled })
+      .catch(() => {})
+    startOnLogin.addEventListener('change', async () => {
+      try {
+        startOnLogin.checked = !!(await window.runner.setStartOnLogin(startOnLogin.checked))
+      } catch (err) {
+        errorEl.style.display = 'block'
+        errorEl.textContent = err.message
+      }
     })
 
     // ---- Folder prompt (personal agents, which run from where they already live) ----

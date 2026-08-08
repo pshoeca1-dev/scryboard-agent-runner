@@ -33,6 +33,25 @@ async function saveStore(records) {
   await fs.writeFile(storePath(), JSON.stringify(records, null, 2))
 }
 
+// Small app-level settings, separate from the agent list. Kept as its own
+// file so a settings write can never risk the installed-agents list.
+function settingsPath() {
+  return path.join(app.getPath('userData'), 'settings.json')
+}
+
+async function loadSettings() {
+  try {
+    return JSON.parse(await fs.readFile(settingsPath(), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
+async function saveSettings(settings) {
+  await fs.mkdir(path.dirname(settingsPath()), { recursive: true })
+  await fs.writeFile(settingsPath(), JSON.stringify(settings, null, 2))
+}
+
 function encryptToken(token) {
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('Secure storage is not available on this system -- cannot safely save a token.')
@@ -44,4 +63,7 @@ function decryptToken(encrypted) {
   return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
 }
 
-module.exports = { loadStore, saveStore, agentFilesDir, encryptToken, decryptToken }
+module.exports = {
+  loadStore, saveStore, agentFilesDir, encryptToken, decryptToken,
+  loadSettings, saveSettings,
+}
