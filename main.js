@@ -14,6 +14,8 @@
 
 const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dialog, shell } = require('electron')
 const path = require('node:path')
+const fs = require('node:fs/promises')
+const { execFile } = require('node:child_process')
 const { AgentManager } = require('./agent-runner')
 const { loadSettings, saveSettings } = require('./store')
 
@@ -351,15 +353,30 @@ ipcMain.handle('update-agent-inputs', async (_event, id, key, filePaths) => {
 })
 // Opens the agent's own folder in Explorer/Finder -- the answer to "where
 // did the file it made for me go," which until now only I could answer by
-// reading AppData paths out of the source. Opens the folder itself (not
-// output/ specifically) so it still works for an agent that hasn't ticked
-// yet or doesn't write output at all -- there's still scryboard.json and
-// its code to see.
+// reading AppData paths out of the source. Prefers output/ directly, since
+// that's the whole reason anyone clicks this -- landing one level up from
+// the actual file (Paul hit exactly this) just adds a click every time.
+// Falls back to the agent's main folder for one that hasn't written
+// anything yet, or never writes output at all -- there's still
+// scryboard.json and its code to see there.
 ipcMain.handle('open-agent-folder', async (_event, id) => {
   const dir = manager.getAgentDir(id)
   if (!dir) return
-  const err = await shell.openPath(dir) // resolves to '' on success, an error string on failure
-  if (err) sendInstallError(`Couldn't open that folder: ${err}`)
+  const outputDir = path.join(dir, 'output')
+  const hasOutputDir = await fs.stat(outputDir).then((s) => s.isDirectory()).catch(() => false)
+  const target = hasOutputDir ? outputDir : dir
+  // shell.openPath doesn't reliably navigate INTO a folder on Windows --
+  // tested and confirmed it can instead just highlight the folder inside
+  // whatever Explorer window is already open nearby, without entering it.
+  // Spawning explorer.exe directly with the path is what actually lands
+  // you inside it.
+  execFile('explorer.exe', [target], (err) => {
+    // explorer.exe's own exit code is not a reliable success/failure
+    // signal (it reports non-zero even when the window opened fine), so
+    // this is best-effort logging, not a user-facing error like the old
+    // shell.openPath path had.
+    if (err) console.error(`Could not open ${target}:`, err.message)
+  })
 })
 ipcMain.handle('acknowledge-output', async (_event, id) => {
   sendAgentList(await manager.acknowledgeOutput(id))

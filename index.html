@@ -205,7 +205,7 @@
         const openFolderBtn = document.createElement('button')
         openFolderBtn.className = 'small' + (agent.hasNewOutput ? ' has-new' : '')
         openFolderBtn.textContent = agent.hasNewOutput ? '📂 Open folder — new file!' : '📂 Open folder'
-        openFolderBtn.title = 'Open this app\'s own folder on your computer. This is where it writes anything meant for you to use outside Scryboard, like a file to drag into an upload box.'
+        openFolderBtn.title = 'Opens straight to what this app made for you (like a file to drag into an upload box) -- or its main folder if it hasn\'t written anything yet.'
         openFolderBtn.addEventListener('click', () => {
           window.runner.openAgentFolder(agent.id)
           if (agent.hasNewOutput) window.runner.acknowledgeOutput(agent.id)
