@@ -18,6 +18,11 @@
   .status-idle { color: #a8895c; }
   button.small { padding: 0.25rem 0.6rem; font-size: 0.8rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; white-space: nowrap; }
   button.small:hover { background: #5a3a20; }
+  /* Highlights the Open Folder button when an app has written something new
+     to output/ -- greenish rather than the usual gold so "there's something
+     waiting for you" reads as a distinct signal, not just another button. */
+  button.small.has-new { background: #2e5a1c; border-color: #7fc98a; color: #d8f0c0; font-weight: 600; }
+  button.small.has-new:hover { background: #386e22; }
   label { font-size: 0.85rem; color: #c0a276; display: block; margin-top: 1.25rem; }
   /* Deliberately not plain `input` -- this is the full-width text-field
      look, and a checkbox picking it up gets stretched across its whole row,
@@ -58,6 +63,10 @@
     Installed apps keep running in the background and are remembered across restarts.
     Supports a small set of pre-approved packages and prompts for any secrets an app needs.
     Still missing: code signing.
+  </p>
+  <p class="hint">
+    📂 <strong>Open folder</strong> is where an app puts anything it made for you.
+    <strong>Give a file →</strong> (only shown when an app needs one) is the other direction — files you hand to it.
   </p>
 
   <label id="startOnLoginRow">
@@ -186,11 +195,28 @@
         row.appendChild(toggleBtn)
         row.appendChild(updateBtn)
 
+        // Always shown, for every app -- distinct from the "give it a file"
+        // button below, which only appears for apps that ask you for
+        // something. This one goes the other way: it's where you find
+        // anything the app made for *you* (an export, a report), since
+        // there's currently no way to see that from inside Scryboard or a
+        // notification -- you have to go look. Highlighted when there's
+        // something new since you last opened it.
+        const openFolderBtn = document.createElement('button')
+        openFolderBtn.className = 'small' + (agent.hasNewOutput ? ' has-new' : '')
+        openFolderBtn.textContent = agent.hasNewOutput ? '📂 Open folder — new file!' : '📂 Open folder'
+        openFolderBtn.title = 'Open this app\'s own folder on your computer. This is where it writes anything meant for you to use outside Scryboard, like a file to drag into an upload box.'
+        openFolderBtn.addEventListener('click', () => {
+          window.runner.openAgentFolder(agent.id)
+          if (agent.hasNewOutput) window.runner.acknowledgeOutput(agent.id)
+        })
+        row.appendChild(openFolderBtn)
+
         if (agent.inputs && agent.inputs.length > 0) {
           const filesBtn = document.createElement('button')
           filesBtn.className = 'small'
-          filesBtn.textContent = 'Files'
-          filesBtn.title = 'Provide or change the file(s) this app reads'
+          filesBtn.textContent = 'Give a file →'
+          filesBtn.title = 'Provide or change a file this app asked you for'
           filesBtn.addEventListener('click', () => openFilesModal(agent))
           row.appendChild(filesBtn)
         }
@@ -407,7 +433,7 @@
 
     function openFilesModal(agent) {
       errorEl.style.display = 'none'
-      filesTitle.textContent = '"' + agent.name + '" files'
+      filesTitle.textContent = 'Give "' + agent.name + '" a file'
       filesFields.innerHTML = ''
       for (const inputDef of agent.inputs) {
         const selections = {}

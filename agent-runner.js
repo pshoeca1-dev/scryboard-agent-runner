@@ -111,6 +111,27 @@ async function maxCodeMtime(dir) {
   return Math.round(newest)
 }
 
+// Files an agent has written to <agentDir>/output/, for the Runner's own
+// "Open folder" affordance. output/ is the documented convention for
+// anything an agent produces for its buyer to use outside Scryboard (an
+// export to drag into a note uploader, a generated report, etc.) -- see
+// docs/agent-manifest.md on the website. Not recursive; a flat folder is
+// the whole convention.
+async function scanOutputFiles(agentDir) {
+  try {
+    const entries = await fs.readdir(path.join(agentDir, 'output'), { withFileTypes: true })
+    const files = []
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      const stat = await fs.stat(path.join(agentDir, 'output', entry.name)).catch(() => null)
+      if (stat) files.push({ name: entry.name, mtimeMs: Math.round(stat.mtimeMs) })
+    }
+    return files
+  } catch {
+    return [] // no output/ folder yet -- not every agent has one, and none do before their first tick
+  }
+}
+
 async function clearAgentCodeFiles(dir) {
   let entries
   try {
@@ -162,18 +183,28 @@ class AgentManager {
   }
 
   list() {
-    return this.records.map((r) => ({
-      id: r.id,
-      name: r.name,
-      campaignName: r.campaignName,
-      version: r.version || null,
-      enabled: r.enabled,
-      installedAt: r.installedAt,
-      status: r.status || 'idle',
-      statusDetail: r.statusDetail || '',
-      inputs: r.inputs || [],
-      localPath: r.localPath || null,
-    }))
+    return this.records.map((r) => {
+      const outputFiles = r.outputFiles || []
+      const acknowledgedAt = r.outputAcknowledgedAt || 0
+      return {
+        id: r.id,
+        name: r.name,
+        campaignName: r.campaignName,
+        version: r.version || null,
+        enabled: r.enabled,
+        installedAt: r.installedAt,
+        status: r.status || 'idle',
+        statusDetail: r.statusDetail || '',
+        inputs: r.inputs || [],
+        localPath: r.localPath || null,
+        outputFiles,
+        // True when this app has written something to output/ since the
+        // buyer last opened its folder -- drives the "new file" highlight
+        // on the Open Folder button so a generated export doesn't sit
+        // there unnoticed.
+        hasNewOutput: outputFiles.some((f) => f.mtimeMs > acknowledgedAt),
+      }
+    })
   }
 
   setStatus(id, status, detail) {
@@ -637,6 +668,26 @@ class AgentManager {
     }
   }
 
+  // Where an agent's files actually live on disk -- for the Runner's own
+  // "Open folder" button, so a buyer can get to whatever an agent wrote
+  // for them (an export, a report) without knowing AppData exists.
+  getAgentDir(id) {
+    const record = this.records.find((r) => r.id === id)
+    return record ? agentDirFor(record, id) : null
+  }
+
+  // Clears the "new output" highlight. Called when the buyer opens the
+  // folder -- opening it *is* "I've seen it," the same way a badge clears
+  // when you open the thing it's pointing at.
+  async acknowledgeOutput(id) {
+    const record = this.records.find((r) => r.id === id)
+    if (record) {
+      record.outputAcknowledgedAt = Date.now()
+      await this.persist()
+    }
+    return this.list()
+  }
+
   async remove(id) {
     this.stopped.add(id)
     const timer = this.timers.get(id)
@@ -737,6 +788,9 @@ class AgentManager {
         throw new Error(`${record.entry} does not export an async tick(scryboard) function.`)
       }
       await mod.tick(client)
+      // scanOutputFiles never throws (see its own try/catch) -- a missing
+      // or unreadable output/ just means no new-file highlight this tick.
+      record.outputFiles = await scanOutputFiles(agentDir)
       this.setStatus(id, 'running', `Last ran ${new Date().toLocaleTimeString()}`)
     } catch (err) {
       this.setStatus(id, 'error', err.message)

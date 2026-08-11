@@ -12,7 +12,7 @@
 //
 // Still not here: code signing.
 
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dialog, shell } = require('electron')
 const path = require('node:path')
 const { AgentManager } = require('./agent-runner')
 const { loadSettings, saveSettings } = require('./store')
@@ -349,6 +349,22 @@ ipcMain.handle('update-agent-inputs', async (_event, id, key, filePaths) => {
     sendInstallError(err.message)
   }
 })
+// Opens the agent's own folder in Explorer/Finder -- the answer to "where
+// did the file it made for me go," which until now only I could answer by
+// reading AppData paths out of the source. Opens the folder itself (not
+// output/ specifically) so it still works for an agent that hasn't ticked
+// yet or doesn't write output at all -- there's still scryboard.json and
+// its code to see.
+ipcMain.handle('open-agent-folder', async (_event, id) => {
+  const dir = manager.getAgentDir(id)
+  if (!dir) return
+  const err = await shell.openPath(dir) // resolves to '' on success, an error string on failure
+  if (err) sendInstallError(`Couldn't open that folder: ${err}`)
+})
+ipcMain.handle('acknowledge-output', async (_event, id) => {
+  sendAgentList(await manager.acknowledgeOutput(id))
+})
+
 ipcMain.handle('update-agent', async (_event, id) => {
   try {
     const result = await manager.updateAgent(id)
