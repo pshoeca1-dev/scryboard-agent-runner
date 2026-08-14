@@ -1,8 +1,8 @@
 {
   "name": "scryboard-agent-runner",
-  "version": "0.1.4-proof-of-concept",
+  "version": "0.1.5-proof-of-concept",
   "private": true,
-  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.4 fixes Open Folder (added in 0.1.3) to actually land inside an app's output/ folder instead of just highlighting it in the parent -- shell.openPath doesn't reliably navigate into a folder on Windows when Explorer already has a nearby window open, so this launches explorer.exe directly instead.",
+  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.5 adds the client methods (proposeExtractions, uploadMedia, setMediaTier, setItemAttributes, getActions, writeEvent, getEvents) that shipped on the Scryboard web app's agent API but were never mirrored here -- any app calling one of them (e.g. Previously On's getActions) failed with '<method> is not a function' on 0.1.4 and earlier.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

@@ -79,7 +79,85 @@ function createClient({ token, baseUrl }) {
     return next
   }
 
-  return { get, getActiveSession, pushWidget, setCharacterData, updateCharacterData }
+  async function proposeExtractions(layer, items) {
+    if (!layer) throw new Error('proposeExtractions needs a `layer`')
+    if (!Array.isArray(items)) throw new Error('proposeExtractions needs an `items` array')
+    return request('/api/agent/extractions', {
+      method: 'POST',
+      body: JSON.stringify({ layer, items }),
+    })
+  }
+
+  async function uploadMedia({ data, alt = null }) {
+    if (!data) throw new Error('uploadMedia needs `data` (Buffer or Uint8Array of image bytes)')
+    const form = new FormData()
+    form.set('file', new Blob([data]))
+    if (alt) form.set('alt', alt)
+    const res = await fetch(`${baseUrl}/api/agent/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    })
+    let body
+    try {
+      body = await res.json()
+    } catch {
+      throw new Error(`Scryboard returned a non-JSON response (HTTP ${res.status})`)
+    }
+    if (!res.ok) {
+      throw new Error(body.error ? `${body.error} (HTTP ${res.status})` : `Request failed (HTTP ${res.status})`)
+    }
+    return body.data
+  }
+
+  async function setMediaTier(mediaId, tier) {
+    if (!mediaId) throw new Error('setMediaTier needs a `mediaId`')
+    return request(`/api/agent/media/${mediaId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ tier }),
+    })
+  }
+
+  async function setItemAttributes(layer, itemId, attributes) {
+    if (!layer) throw new Error('setItemAttributes needs a `layer`')
+    if (!itemId) throw new Error('setItemAttributes needs an `itemId`')
+    return request('/api/agent/item-attributes', {
+      method: 'POST',
+      body: JSON.stringify({ layer, item_id: itemId, attributes }),
+    })
+  }
+
+  async function getActions(params = {}) {
+    return get('actions', params)
+  }
+
+  async function writeEvent({ event_type, payload, session_id = null, participants = [] }) {
+    if (!event_type) throw new Error('writeEvent needs an `event_type`')
+    if (!payload || typeof payload !== 'object') throw new Error('writeEvent needs a `payload` object')
+    return request('/api/agent/events', {
+      method: 'POST',
+      body: JSON.stringify({ event_type, payload, session_id, participants }),
+    })
+  }
+
+  async function getEvents(params = {}) {
+    return get('events', params)
+  }
+
+  return {
+    get,
+    getActiveSession,
+    pushWidget,
+    setCharacterData,
+    updateCharacterData,
+    proposeExtractions,
+    uploadMedia,
+    setMediaTier,
+    setItemAttributes,
+    getActions,
+    writeEvent,
+    getEvents,
+  }
 }
 
 module.exports = { createClient }
