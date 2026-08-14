@@ -1,8 +1,8 @@
 {
   "name": "scryboard-agent-runner",
-  "version": "0.1.5-proof-of-concept",
+  "version": "0.1.6-proof-of-concept",
   "private": true,
-  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.5 adds the client methods (proposeExtractions, uploadMedia, setMediaTier, setItemAttributes, getActions, writeEvent, getEvents) that shipped on the Scryboard web app's agent API but were never mirrored here -- any app calling one of them (e.g. Previously On's getActions) failed with '<method> is not a function' on 0.1.4 and earlier.",
+  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.6 fixes a hot-reload gap for personal agents running from a local folder: only the entry file (agent.mjs) actually reloaded when its code changed -- any file it imports (lib/*.mjs) got cached by Node's module loader the first time anything pulled it in, for the rest of the process's life, no matter how many times it was edited on disk afterward. A custom module loader hook (esm-cache-bust.mjs, registered at startup) now keys every local file by its own mtime, so editing a lib file takes effect on the very next tick like the entry file already did.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -38,6 +38,7 @@
       "preload.js",
       "agent-runner.js",
       "scryboard-client.js",
+      "esm-cache-bust.mjs",
       "store.js",
       "index.html",
       "assets/**/*",

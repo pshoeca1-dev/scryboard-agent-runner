@@ -16,8 +16,18 @@ const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dial
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const { execFile } = require('node:child_process')
+const { register } = require('node:module')
+const { pathToFileURL } = require('node:url')
 const { AgentManager } = require('./agent-runner')
 const { loadSettings, saveSettings } = require('./store')
+
+// Registered before any agent ever ticks: without this, only an agent's
+// entry file (agent.mjs) actually reloads when its code changes -- any
+// file it imports (lib/*.mjs) gets cached by Node's module loader the
+// first time anything pulls it in, for the rest of this process's life,
+// no matter how many times it's edited on disk afterward. See
+// esm-cache-bust.mjs for the full story and why this bit Paul in the field.
+register('./esm-cache-bust.mjs', pathToFileURL(__filename).href)
 
 // Agents only tick while this app is running, so an app that isn't running
 // is indistinguishable from agents that quietly stopped working -- come
