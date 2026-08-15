@@ -19,6 +19,7 @@ const { execFile } = require('node:child_process')
 const { register } = require('node:module')
 const { pathToFileURL } = require('node:url')
 const { AgentManager } = require('./agent-runner')
+const { PlaybackManager } = require('./playback')
 const { loadSettings, saveSettings } = require('./store')
 
 // Registered before any agent ever ticks: without this, only an agent's
@@ -85,6 +86,7 @@ let mainWindow = null
 let tray = null
 let pendingUrl = null
 let manager = null
+let playbackManager = null
 let isQuitting = false
 let hasShownTrayHint = false
 
@@ -273,7 +275,14 @@ app.on('before-quit', () => {
 app.whenReady().then(async () => {
   await applyStartOnLoginDefault()
 
-  manager = new AgentManager(sendAgentList)
+  // Media playback (the plays_audio capability). Status changes go
+  // straight to the main window's now-playing bar; the bar's Stop button
+  // comes back through the stop-playback handler below.
+  playbackManager = new PlaybackManager((status) => {
+    if (mainWindow) mainWindow.webContents.send('playback-status', status)
+  })
+
+  manager = new AgentManager(sendAgentList, playbackManager)
   await manager.init() // resumes ticking every previously-installed, enabled agent
 
   createTray()
@@ -404,3 +413,12 @@ ipcMain.handle('update-agent', async (_event, id) => {
     sendInstallError(err.message)
   }
 })
+
+// ---- Media playback (plays_audio) ----
+// The hidden playback page reports ended/error here; the main window's
+// Stop button and status queries come through the two handlers below.
+ipcMain.on('playback-page-event', (_event, kind, detail) => {
+  playbackManager?.handlePageEvent(kind, detail)
+})
+ipcMain.handle('stop-playback', () => playbackManager?.stop())
+ipcMain.handle('playback-status', () => playbackManager?.status() ?? { playing: false })

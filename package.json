@@ -1,8 +1,8 @@
 {
   "name": "scryboard-agent-runner",
-  "version": "0.1.6-proof-of-concept",
+  "version": "0.2.0-proof-of-concept",
   "private": true,
-  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.1.6 fixes a hot-reload gap for personal agents running from a local folder: only the entry file (agent.mjs) actually reloaded when its code changed -- any file it imports (lib/*.mjs) got cached by Node's module loader the first time anything pulled it in, for the rest of the process's life, no matter how many times it was edited on disk afterward. A custom module loader hook (esm-cache-bust.mjs, registered at startup) now keys every local file by its own mtime, so editing a lib file takes effect on the very next tick like the entry file already did.",
+  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.2.0 adds media playback (the plays_audio capability): apps that declare it in their manifest can play sound through this machine's speakers via scryboard.playMedia/playAudio, played by a hidden Chromium window this app already ships (no new dependencies, no native bindings, media-agnostic plumbing so video can be its own capability later). Consent is explicit at install/update time, a now-playing bar with a Stop button shows whenever anything is audible, one thing plays at a time, and Pause/Remove silences the app.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -39,6 +39,9 @@
       "agent-runner.js",
       "scryboard-client.js",
       "esm-cache-bust.mjs",
+      "playback.js",
+      "playback-preload.js",
+      "playback.html",
       "store.js",
       "index.html",
       "assets/**/*",

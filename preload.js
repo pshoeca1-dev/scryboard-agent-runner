@@ -21,4 +21,7 @@ contextBridge.exposeInMainWorld('runner', {
   acknowledgeOutput: (id) => ipcRenderer.invoke('acknowledge-output', id),
   getStartOnLogin: () => ipcRenderer.invoke('get-start-on-login'),
   setStartOnLogin: (enabled) => ipcRenderer.invoke('set-start-on-login', enabled),
+  onPlaybackStatus: (callback) => ipcRenderer.on('playback-status', (_event, status) => callback(status)),
+  getPlaybackStatus: () => ipcRenderer.invoke('playback-status'),
+  stopPlayback: () => ipcRenderer.invoke('stop-playback'),
 })

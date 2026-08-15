@@ -55,6 +55,18 @@
   button.choose-files:hover { background: #3d260f; }
   .picked-files { font-size: 0.78rem; color: #a8c880; margin-top: 0.3rem; }
   .picked-files.empty { color: #6b5738; font-style: italic; }
+  /* Now-playing bar -- visible whenever any app is making sound, with the
+     one control that must always be within reach: Stop. */
+  #playbackBar { display: none; align-items: center; gap: 0.75rem; padding: 0.6rem 0.75rem; margin-bottom: 0.75rem; background: #1c2a14; border: 1px solid #7fc98a; border-radius: 6px; }
+  #playbackText { flex: 1; font-size: 0.85rem; color: #d8f0c0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #playbackStop { padding: 0.3rem 0.8rem; font-size: 0.8rem; background: #4a1c14; border: 1px solid #e08080; color: #e08080; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  #playbackStop:hover { background: #5c241a; }
+  /* Device-capability consent block in the install prompt -- deliberately
+     louder than the secrets fields around it: this is the app asking to DO
+     something to this computer, not just for a key. */
+  .capability-consent { margin-top: 1.25rem; padding: 0.7rem 0.85rem; background: #2a2010; border: 1px solid #d4a840; border-radius: 6px; }
+  .capability-consent strong { display: block; font-size: 0.88rem; color: #e8dcc0; }
+  .capability-consent p { font-size: 0.78rem; color: #c0a276; margin: 0.25rem 0 0; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -78,6 +90,11 @@
   </label>
 
   <div id="error"></div>
+
+  <div id="playbackBar">
+    <span id="playbackText"></span>
+    <button id="playbackStop">■ Stop</button>
+  </div>
 
   <div id="agentList"></div>
   <p id="empty">Nothing installed yet.</p>
@@ -350,8 +367,52 @@
       for (const inputDef of info.inputs || []) {
         buildInputPicker(inputsFields, inputDef, currentInputSelections)
       }
+      // Device capabilities get their own explicit consent block --
+      // clicking Install/Continue with this visible IS the consent, and
+      // an install that declares one always routes through this prompt
+      // (never the silent auto-finish path), so it can't be missed.
+      const CAPABILITY_CONSENT = {
+        plays_audio: {
+          title: '🔊 This app can play sound through this computer\'s speakers.',
+          detail: 'There\'s no limit on what it plays — installing it means you\'re OK hearing whatever it produces. A Stop button always shows in this window while anything is playing, and Pause/Remove silences it.',
+        },
+      }
+      for (const cap of info.capabilities || []) {
+        const consent = CAPABILITY_CONSENT[cap] || {
+          title: 'This app requests the "' + cap + '" capability.',
+          detail: 'This Runner version doesn\'t recognize it — updating the Runner may be needed before it works.',
+        }
+        const block = document.createElement('div')
+        block.className = 'capability-consent'
+        const title = document.createElement('strong')
+        title.textContent = consent.title
+        const detail = document.createElement('p')
+        detail.textContent = consent.detail
+        block.appendChild(title)
+        block.appendChild(detail)
+        inputsFields.appendChild(block)
+      }
       secretsOverlay.style.display = 'flex'
     })
+
+    // ---- Now-playing bar (plays_audio capability) ----
+    const playbackBar = document.getElementById('playbackBar')
+    const playbackText = document.getElementById('playbackText')
+    function renderPlayback(status) {
+      if (status && status.playing) {
+        playbackText.textContent = '🔊 ' + status.agentName + (status.title ? ' — ' + status.title : '') + ' is playing'
+        playbackBar.style.display = 'flex'
+      } else {
+        playbackBar.style.display = 'none'
+        if (status && status.lastError) {
+          errorEl.style.display = 'block'
+          errorEl.textContent = 'Playback problem: ' + status.lastError
+        }
+      }
+    }
+    window.runner.onPlaybackStatus(renderPlayback)
+    window.runner.getPlaybackStatus().then(renderPlayback).catch(() => {})
+    document.getElementById('playbackStop').addEventListener('click', () => window.runner.stopPlayback())
 
     // ---- Start-on-login (defaults on at first install; see main.js) ----
     const startOnLogin = document.getElementById('startOnLogin')

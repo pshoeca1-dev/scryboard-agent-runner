@@ -146,7 +146,7 @@ async function clearAgentCodeFiles(dir) {
 }
 
 class AgentManager {
-  constructor(onListChange) {
+  constructor(onListChange, playback = null) {
     this.records = []          // persisted fields plus transient status/statusDetail
     this.tokens = new Map()    // id -> decrypted token, kept in memory only, never persisted raw
     this.secrets = new Map()   // id -> { KEY: decrypted value }, same -- memory only
@@ -157,6 +157,32 @@ class AgentManager {
                                       // lets runTick wipe all of them before/after each tick so one
                                       // agent's key can never linger and leak into another's run
     this.onListChange = onListChange || (() => {})
+    this.playback = playback   // PlaybackManager (or null in a build without one)
+  }
+
+  // Which device capabilities this agent actually holds right now.
+  //
+  // Two sources, deliberately different: a DOWNLOADED app's capabilities
+  // are whatever was consented to at install/update time and stored on
+  // the record -- editing a manifest server-side must never grow an
+  // ability without the buyer seeing a prompt. A PERSONAL agent
+  // (localPath) reads its own folder's scryboard.json fresh every tick:
+  // it's the user's own code in the user's own folder, the same trust
+  // grant as pointing the Runner at it in the first place, and it means
+  // an edit takes effect on the next tick instead of needing a
+  // remove-and-reconnect.
+  async capabilitiesFor(record) {
+    if (record.localPath) {
+      try {
+        const manifest = JSON.parse(
+          await fs.readFile(path.join(record.localPath, 'scryboard.json'), 'utf8')
+        )
+        return new Set(Array.isArray(manifest.capabilities) ? manifest.capabilities : [])
+      } catch {
+        return new Set() // unreadable manifest -- no capabilities rather than stale ones
+      }
+    }
+    return new Set(record.capabilities || [])
   }
 
   async init() {
@@ -291,7 +317,11 @@ class AgentManager {
 
     const requiredSecrets = (manifest.secrets ?? []).filter((s) => s.required !== false)
     const declaredInputs = manifest.inputs ?? []
-    if (requiredSecrets.length === 0 && declaredInputs.length === 0) {
+    const declaredCapabilities = manifest.capabilities ?? []
+    // Capabilities force the prompt even when nothing else would -- a
+    // device ability (play sound through the speakers) is exactly the
+    // thing that must never be granted by a silent auto-finish.
+    if (requiredSecrets.length === 0 && declaredInputs.length === 0 && declaredCapabilities.length === 0) {
       return this.finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues: {}, inputFiles: {} })
     }
 
@@ -310,6 +340,7 @@ class AgentManager {
         multiple: !!i.multiple,
         required: i.required !== false,
       })),
+      capabilities: declaredCapabilities,
     }
   }
 
@@ -455,6 +486,10 @@ class AgentManager {
         multiple: !!i.multiple,
         required: i.required !== false,
       })),
+      // Shown for information -- a personal agent's capabilities are
+      // live-read from its own folder (see capabilitiesFor), so this line
+      // tells the author what their manifest currently grants.
+      capabilities: manifest.capabilities ?? [],
     }
   }
 
@@ -496,6 +531,10 @@ class AgentManager {
       version: manifest.version || null,
       poll: manifest.poll || {},
       inputs: manifest.inputs || [],
+      // Device capabilities consented to at this install. For a localPath
+      // agent this is informational only -- capabilitiesFor() live-reads
+      // the folder's own manifest instead.
+      capabilities: manifest.capabilities || [],
       // Set only for personal agents -- the folder the author keeps their
       // code in. Its presence is what marks this agent as "runs from where
       // it already lives" everywhere else in this file.
@@ -575,7 +614,14 @@ class AgentManager {
       if (!(await this.hasInputFiles(dir, i.key))) missingInputs.push(i)
     }
 
-    if (missingSecrets.length > 0 || missingInputs.length > 0) {
+    // A capability the installed version didn't have is a NEW grant, and
+    // an update must never widen what an app may do to this machine
+    // silently -- it goes through the same prompt a fresh install would.
+    const newCapabilities = (manifest.capabilities ?? []).filter(
+      (c) => !(record.capabilities || []).includes(c)
+    )
+
+    if (missingSecrets.length > 0 || missingInputs.length > 0 || newCapabilities.length > 0) {
       const pendingId = crypto.randomUUID()
       this.pendingInstalls.set(pendingId, { files, manifest, updateId: id })
       return {
@@ -592,6 +638,7 @@ class AgentManager {
           multiple: !!i.multiple,
           required: true,
         })),
+        capabilities: newCapabilities,
       }
     }
 
@@ -631,6 +678,11 @@ class AgentManager {
     record.poll = manifest.poll || {}
     record.version = manifest.version || record.version || null
     record.inputs = manifest.inputs || record.inputs || []
+    // Reaching here means any newly-declared capability already went
+    // through the update prompt (see updateAgent) -- and one the new
+    // version DROPPED comes off the record too; consent doesn't outlive
+    // the declaration.
+    record.capabilities = manifest.capabilities || []
     await this.persist()
     this.setStatus(id, 'idle', `Updated to v${record.version || '?'}`)
     return this.list()
@@ -690,6 +742,8 @@ class AgentManager {
 
   async remove(id) {
     this.stopped.add(id)
+    // A removed app doesn't get to keep making sound.
+    this.playback?.stop(id)
     const timer = this.timers.get(id)
     if (timer) clearTimeout(timer)
     this.timers.delete(id)
@@ -719,6 +773,9 @@ class AgentManager {
       this.scheduleLoop(id)
     } else {
       this.stopped.add(id)
+      // Pausing an app silences it too -- "make it stop" is half of why
+      // anyone reaches for Pause on an audio-playing app.
+      this.playback?.stop(id)
       const timer = this.timers.get(id)
       if (timer) clearTimeout(timer)
       this.timers.delete(id)
@@ -741,7 +798,21 @@ class AgentManager {
       return
     }
 
-    const client = createClient({ token, baseUrl: record.baseUrl })
+    // Per-agent playback bridge: the client checks the capability set (it
+    // knows what this agent declared); the manager behind it validates the
+    // media and owns the one-thing-plays-at-a-time policy. Every play/stop
+    // is stamped with this agent's identity so the UI can say WHO is
+    // making noise and stop() can't cross agents.
+    const capabilities = await this.capabilitiesFor(record)
+    const playback = this.playback
+      ? {
+          capabilities,
+          play: (spec) => this.playback.play({ ...spec, agentId: id, agentName: record.name }),
+          stop: () => this.playback.stop(id),
+        }
+      : null
+
+    const client = createClient({ token, baseUrl: record.baseUrl, playback })
 
     let sessionActive = false
     let session = null

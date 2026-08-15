@@ -11,8 +11,17 @@
 // Same method surface as agent-runtime/scryboard.mjs and the sandbox's
 // version in src/lib/agentSandbox.ts, so an agent's tick() function reads
 // identically regardless of which of the three actually runs it.
+//
+// `playback` is this runner's one addition to that shared surface with a
+// real implementation behind it: { play(spec), stop(), capabilities: Set }
+// bound to this agent by agent-runner.js. The capability gate lives HERE,
+// where the agent's declared set is known -- the manager past it only
+// validates the media itself.
 
-function createClient({ token, baseUrl }) {
+const fsPromises = require('node:fs/promises')
+const { MEDIA_TYPES, MAX_MEDIA_BYTES } = require('./playback')
+
+function createClient({ token, baseUrl, playback = null }) {
   async function request(path, options = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       ...options,
@@ -144,6 +153,45 @@ function createClient({ token, baseUrl }) {
     return get('events', params)
   }
 
+  // Play media on this machine. Requires the matching capability in the
+  // agent's manifest ('plays_audio' for audio/*): the buyer consented to
+  // that at install, and an app that never declared it gets an error, not
+  // a sound. spec: { data (Buffer/Uint8Array) or file (path),
+  // contentType, title?, volume? (0..1) }.
+  async function playMedia({ data, file, contentType, title, volume } = {}) {
+    if (!playback) {
+      throw new Error('Media playback is not available in this runner build.')
+    }
+    if (!contentType) throw new Error('playMedia needs a `contentType` (e.g. "audio/mpeg")')
+    const family = String(contentType).split('/')[0]
+    const media = MEDIA_TYPES[family]
+    if (!media) {
+      throw new Error(`Unsupported media type "${contentType}" -- audio only for now`)
+    }
+    if (!playback.capabilities.has(media.capability)) {
+      throw new Error(`This app's manifest does not declare the "${media.capability}" capability`)
+    }
+    let bytes = data
+    if (!bytes && file) bytes = await fsPromises.readFile(file)
+    if (!bytes || bytes.length === 0) throw new Error('playMedia needs `data` (bytes) or `file` (a path)')
+    if (bytes.length > MAX_MEDIA_BYTES) {
+      throw new Error(`Media too large to play (${Math.round(MAX_MEDIA_BYTES / 1024 / 1024)}MB max)`)
+    }
+    return playback.play({ bytes, contentType, title, volume })
+  }
+
+  // Convenience for the audio case; contentType defaults to MP3.
+  async function playAudio(dataOrFile, opts = {}) {
+    const spec = typeof dataOrFile === 'string' ? { file: dataOrFile } : { data: dataOrFile }
+    return playMedia({ contentType: 'audio/mpeg', ...opts, ...spec })
+  }
+
+  // Stops this app's own playback (never another app's). Safe to call
+  // when nothing is playing.
+  async function stopMedia() {
+    if (playback) playback.stop()
+  }
+
   return {
     get,
     getActiveSession,
@@ -157,6 +205,9 @@ function createClient({ token, baseUrl }) {
     getActions,
     writeEvent,
     getEvents,
+    playMedia,
+    playAudio,
+    stopMedia,
   }
 }
 

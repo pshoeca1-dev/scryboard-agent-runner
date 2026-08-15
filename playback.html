@@ -1,0 +1,60 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scryboard App Runner — playback</title>
+<!-- Never shown. This page exists because Chromium is the one media
+     player this app ships everywhere for free: bytes arrive over IPC, a
+     media element plays them, ended/error goes back. Media-agnostic: the
+     element tag comes from the play order (audio today, video-ready), so
+     supporting a new media type touches the MEDIA_TYPES table in
+     playback.js, not this page. -->
+</head>
+<body>
+<script>
+  let element = null
+  let objectUrl = null
+
+  function teardown() {
+    if (element) {
+      element.pause()
+      element.removeAttribute('src')
+      element.remove()
+      element = null
+    }
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl)
+      objectUrl = null
+    }
+  }
+
+  window.playbackBridge.onPlay((spec) => {
+    teardown() // one thing plays at a time -- a new order replaces the old
+
+    element = document.createElement(spec.element === 'video' ? 'video' : 'audio')
+    // Bytes arrive as a structured-cloned Uint8Array; a Blob URL keeps
+    // decoding inside Chromium's normal media pipeline (range requests,
+    // seeking) rather than cramming a giant data: URI through the parser.
+    objectUrl = URL.createObjectURL(new Blob([spec.bytes], { type: spec.contentType }))
+    element.src = objectUrl
+    element.volume = spec.volume
+    element.addEventListener('ended', () => {
+      teardown()
+      window.playbackBridge.report('ended')
+    })
+    element.addEventListener('error', () => {
+      const detail = element && element.error ? `media error code ${element.error.code}` : 'media error'
+      teardown()
+      window.playbackBridge.report('error', detail)
+    })
+    document.body.appendChild(element)
+    element.play().catch((err) => {
+      teardown()
+      window.playbackBridge.report('error', err.message)
+    })
+  })
+
+  window.playbackBridge.onStop(() => teardown())
+</script>
+</body>
+</html>
