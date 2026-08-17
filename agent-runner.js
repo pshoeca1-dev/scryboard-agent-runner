@@ -299,6 +299,24 @@ class AgentManager {
     }
     const agentName = decodeURIComponent(res.headers.get('x-agent-name') || 'agent')
     const campaignName = decodeURIComponent(res.headers.get('x-campaign-name') || '')
+
+    // Same app, same campaign, already installed here -> this link carries
+    // a RE-ISSUED token (the website's "Update and re-issue token" flow:
+    // a new version needed different access, so the old token was revoked
+    // and a new one minted). Swap the token on the app we already have and
+    // run the normal update against it, instead of making the buyer remove
+    // the app and set it up again -- that would throw away its secrets and
+    // its state/ folder (ledgers, caches) for nothing.
+    const existing = this.records.find((r) =>
+      !r.localPath && r.baseUrl === base && r.name === agentName && r.campaignName === campaignName)
+    if (existing) {
+      existing.encryptedToken = encryptToken(token)
+      this.tokens.set(existing.id, token)
+      await this.persist()
+      this.setStatus(existing.id, 'idle', 'Token replaced — updating…')
+      return this.updateAgent(existing.id)
+    }
+
     const bytes = new Uint8Array(await res.arrayBuffer())
 
     const files = stripCommonRoot(unzipSync(bytes))
