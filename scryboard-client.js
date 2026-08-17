@@ -97,6 +97,23 @@ function createClient({ token, baseUrl, playback = null }) {
     })
   }
 
+  // Structured import into the World Bible as CONFIRMED canon with
+  // provenance (canon_import write scope, DM-scope token, world_bible
+  // only). Mirrors agent-runtime/scryboard.mjs importCanon exactly; see
+  // docs/agent-api.md#importing-canon in the Scryboard repo.
+  async function importCanon({ layer = 'world_bible', items } = {}) {
+    if (!Array.isArray(items) || items.length === 0) throw new Error('importCanon needs a non-empty `items` array')
+    return request('/api/agent/canon-import', {
+      method: 'POST',
+      body: JSON.stringify({ layer, items }),
+    })
+  }
+
+  // { role, allowed, reason, layers } -- never throws for a valid token.
+  async function canonImportStatus() {
+    return request('/api/agent/canon-import')
+  }
+
   async function uploadMedia({ data, alt = null }) {
     if (!data) throw new Error('uploadMedia needs `data` (Buffer or Uint8Array of image bytes)')
     const form = new FormData()
@@ -199,6 +216,8 @@ function createClient({ token, baseUrl, playback = null }) {
     setCharacterData,
     updateCharacterData,
     proposeExtractions,
+    importCanon,
+    canonImportStatus,
     uploadMedia,
     setMediaTier,
     setItemAttributes,

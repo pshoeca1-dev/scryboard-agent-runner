@@ -1,8 +1,8 @@
 {
   "name": "scryboard-agent-runner",
-  "version": "0.2.0-proof-of-concept",
+  "version": "0.2.1-proof-of-concept",
   "private": true,
-  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.2.0 adds media playback (the plays_audio capability): apps that declare it in their manifest can play sound through this machine's speakers via scryboard.playMedia/playAudio, played by a hidden Chromium window this app already ships (no new dependencies, no native bindings, media-agnostic plumbing so video can be its own capability later). Consent is explicit at install/update time, a now-playing bar with a Stop button shows whenever anything is audible, one thing plays at a time, and Pause/Remove silences the app.",
+  "description": "Desktop app that runs Node-CLI Scryboard apps without a terminal. This is a proof-of-concept build: proves the click-a-link-to-download-and-run loop works, before the real tray app, auto-updates, code signing, or multi-app management get built on top of it. 0.2.1 adds the importCanon/canonImportStatus client methods (the Scryboard canon_import capability -- Kanka Codex 1.2.0 imports the DM's Kanka wiki into the World Bible through it) and re-linking: opening an install link for an app that is already installed for the same campaign swaps in the new token and updates in place, keeping the app's secrets and state -- what the website's \"Update and re-issue token\" flow hands you when a new version needs different access.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
