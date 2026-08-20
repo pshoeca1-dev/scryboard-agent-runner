@@ -158,6 +158,25 @@ class AgentManager {
                                       // agent's key can never linger and leak into another's run
     this.onListChange = onListChange || (() => {})
     this.playback = playback   // PlaybackManager (or null in a build without one)
+    this.tickLock = Promise.resolve() // see withTickLock()
+  }
+
+  // Every installed agent polls on its own independent timer, but they all
+  // share ONE Node process -- and therefore one process.env. runTick below
+  // stamps this agent's secrets into it, runs the agent's code, then wipes
+  // them, on the assumption that only one agent's tick is ever "in" that
+  // window at a time. That assumption doesn't hold on its own: a tick can
+  // sit awaiting network calls (an LLM call, a TTS call) for many seconds,
+  // which is plenty of time for a faster-polling agent's own timer to fire
+  // and run the exact same clear-then-set dance in the middle of it --
+  // wiping the first agent's keys out from under it (or leaking its own
+  // in). This queue makes "one agent's tick at a time" actually true
+  // instead of merely likely.
+  withTickLock(fn) {
+    const previous = this.tickLock
+    let release
+    this.tickLock = new Promise((resolve) => { release = resolve })
+    return previous.then(fn).finally(release)
   }
 
   // Which device capabilities this agent actually holds right now.
@@ -910,36 +929,40 @@ class AgentManager {
       }
     }
 
-    try {
-      this.setStatus(id, 'working', 'Running…')
+    await this.withTickLock(async () => {
+      try {
+        this.setStatus(id, 'working', 'Running…')
 
-      // Clear every secret key any agent has ever used, then set only
-      // this one's own -- so a previous agent's tick can never leave a
-      // stray value visible to a different agent's run.
-      for (const key of this.allSecretKeys) delete process.env[key]
-      const mySecrets = this.secrets.get(id) || {}
-      for (const [key, value] of Object.entries(mySecrets)) process.env[key] = value
+        // Clear every secret key any agent has ever used, then set only
+        // this one's own -- so a previous agent's tick can never leave a
+        // stray value visible to a different agent's run. Safe against
+        // overlap now: withTickLock guarantees no other agent's tick is
+        // in this section at the same time.
+        for (const key of this.allSecretKeys) delete process.env[key]
+        const mySecrets = this.secrets.get(id) || {}
+        for (const [key, value] of Object.entries(mySecrets)) process.env[key] = value
 
-      const agentDir = agentDirFor(record, id)
-      const entryFile = path.join(agentDir, record.entry)
-      // ?v=<newest mtime> so edited code is actually picked up -- see
-      // maxCodeMtime. Without it Node serves the module it cached on the
-      // first tick forever.
-      const stamp = await maxCodeMtime(agentDir)
-      const mod = await import(`${pathToFileURL(entryFile).href}?v=${stamp}`)
-      if (typeof mod.tick !== 'function') {
-        throw new Error(`${record.entry} does not export an async tick(scryboard) function.`)
+        const agentDir = agentDirFor(record, id)
+        const entryFile = path.join(agentDir, record.entry)
+        // ?v=<newest mtime> so edited code is actually picked up -- see
+        // maxCodeMtime. Without it Node serves the module it cached on the
+        // first tick forever.
+        const stamp = await maxCodeMtime(agentDir)
+        const mod = await import(`${pathToFileURL(entryFile).href}?v=${stamp}`)
+        if (typeof mod.tick !== 'function') {
+          throw new Error(`${record.entry} does not export an async tick(scryboard) function.`)
+        }
+        await mod.tick(client)
+        // scanOutputFiles never throws (see its own try/catch) -- a missing
+        // or unreadable output/ just means no new-file highlight this tick.
+        record.outputFiles = await scanOutputFiles(agentDir)
+        this.setStatus(id, 'running', `Last ran ${new Date().toLocaleTimeString()}`)
+      } catch (err) {
+        this.setStatus(id, 'error', err.message)
+      } finally {
+        for (const key of this.allSecretKeys) delete process.env[key]
       }
-      await mod.tick(client)
-      // scanOutputFiles never throws (see its own try/catch) -- a missing
-      // or unreadable output/ just means no new-file highlight this tick.
-      record.outputFiles = await scanOutputFiles(agentDir)
-      this.setStatus(id, 'running', `Last ran ${new Date().toLocaleTimeString()}`)
-    } catch (err) {
-      this.setStatus(id, 'error', err.message)
-    } finally {
-      for (const key of this.allSecretKeys) delete process.env[key]
-    }
+    })
 
     if (this.stopped.has(id)) return
     const activeMs = (record.poll?.activeSeconds ?? 30) * 1000
