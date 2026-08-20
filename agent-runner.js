@@ -187,9 +187,25 @@ class AgentManager {
 
   async init() {
     this.records = await loadStore()
+    let backfilled = false
     for (const record of this.records) {
       record.status = 'idle'
       record.statusDetail = ''
+      // Records saved before "secrets" schema started being persisted
+      // (i.e. installed before "Update keys" existed) won't have it --
+      // backfill from the agent's own on-disk scryboard.json, which is
+      // already there from install/update, so the button can appear right
+      // away instead of only after the next manual Update.
+      if (record.secrets === undefined) {
+        try {
+          const dir = agentDirFor(record, record.id)
+          const manifest = JSON.parse(await fs.readFile(path.join(dir, 'scryboard.json'), 'utf8'))
+          record.secrets = manifest.secrets || []
+        } catch {
+          record.secrets = []
+        }
+        backfilled = true
+      }
       try {
         this.tokens.set(record.id, decryptToken(record.encryptedToken))
         const secretValues = {}
@@ -205,6 +221,7 @@ class AgentManager {
       if (record.enabled) this.scheduleLoop(record.id)
       else { record.status = 'idle'; record.statusDetail = 'Paused' }
     }
+    if (backfilled) await this.persist()
     this.onListChange(this.list())
   }
 
@@ -222,6 +239,7 @@ class AgentManager {
         status: r.status || 'idle',
         statusDetail: r.statusDetail || '',
         inputs: r.inputs || [],
+        secrets: r.secrets || [],
         localPath: r.localPath || null,
         outputFiles,
         // True when this app has written something to output/ since the
@@ -549,6 +567,10 @@ class AgentManager {
       version: manifest.version || null,
       poll: manifest.poll || {},
       inputs: manifest.inputs || [],
+      // Schema only (key/label/help/required) -- never values, those live
+      // encrypted in encryptedSecrets. Lets the UI offer "Update keys" on
+      // an already-installed agent without re-running install/update.
+      secrets: manifest.secrets || [],
       // Device capabilities consented to at this install. For a localPath
       // agent this is informational only -- capabilitiesFor() live-reads
       // the folder's own manifest instead.
@@ -696,6 +718,7 @@ class AgentManager {
     record.poll = manifest.poll || {}
     record.version = manifest.version || record.version || null
     record.inputs = manifest.inputs || record.inputs || []
+    record.secrets = manifest.secrets || record.secrets || []
     // Reaching here means any newly-declared capability already went
     // through the update prompt (see updateAgent) -- and one the new
     // version DROPPED comes off the record too; consent doesn't outlive
@@ -718,6 +741,37 @@ class AgentManager {
     const dir = agentDirFor(record, id)
     await copyPickedFiles(dir, key, filePaths)
     await fs.rm(path.join(dir, 'processed.json'), { force: true }).catch(() => {})
+    this.setStatus(id, record.status || 'idle', record.statusDetail || '')
+    return this.list()
+  }
+
+  // Standalone re-entry of secret values, outside the install/update flow
+  // entirely -- the "Update keys" button on an already-installed agent's
+  // row. Mirrors updateAgentInputFiles above: no other route lets you
+  // change a secret once it's set, since a required secret only gets
+  // re-prompted at update time if it's still MISSING, never to let you
+  // rotate a key that's already there (e.g. a revoked/rotated ElevenLabs
+  // key for an app like Previously On).
+  //
+  // The renderer never shows what's currently stored (secrets are
+  // password-masked and never round-tripped back out), so a blank field is
+  // the only way to say "leave this one alone" -- only keys with a
+  // non-empty typed value are touched.
+  async updateAgentSecrets(id, secretValues) {
+    const record = this.records.find((r) => r.id === id)
+    if (!record) throw new Error('App not found.')
+    const existing = this.secrets.get(id) || {}
+    const encryptedSecrets = { ...(record.encryptedSecrets || {}) }
+    const updatedValues = { ...existing }
+    for (const [key, value] of Object.entries(secretValues || {})) {
+      if (!value || !String(value).trim()) continue
+      encryptedSecrets[key] = encryptToken(value)
+      updatedValues[key] = value
+      this.allSecretKeys.add(key)
+    }
+    record.encryptedSecrets = encryptedSecrets
+    this.secrets.set(id, updatedValues)
+    await this.persist()
     this.setStatus(id, record.status || 'idle', record.statusDetail || '')
     return this.list()
   }

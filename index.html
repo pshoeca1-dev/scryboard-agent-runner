@@ -30,10 +30,10 @@
   input:not([type="checkbox"]) { width: 100%; box-sizing: border-box; padding: 0.5rem; margin-top: 0.35rem; background: #2c1a0c; border: 1px solid #5a4020; color: #e8dcc0; border-radius: 4px; }
   button#go { padding: 0.5rem 1rem; margin-top: 0.75rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
 
-  #secretsOverlay, #filesOverlay, #folderOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
-  #secretsModal, #filesModal, #folderModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
-  #secretsModal h2, #filesModal h2, #folderModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
-  #secretsModal p.modal-hint, #filesModal p.modal-hint, #folderModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
+  #secretsOverlay, #filesOverlay, #folderOverlay, #keysOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
+  #secretsModal, #filesModal, #folderModal, #keysModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
+  #secretsModal h2, #filesModal h2, #folderModal h2, #keysModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
+  #secretsModal p.modal-hint, #filesModal p.modal-hint, #folderModal p.modal-hint, #keysModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
   #startOnLoginRow { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.7rem 0.85rem; margin-bottom: 1rem; background: #2c1a0c; border: 1px solid #5a4020; border-radius: 6px; cursor: pointer; }
   #startOnLoginRow strong { display: block; font-size: 0.88rem; color: #e8dcc0; font-weight: 600; }
   #startOnLoginRow input { margin-top: 0.2rem; accent-color: #c9a84c; flex-shrink: 0; }
@@ -46,7 +46,8 @@
   .modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
   button#secretsCancel { padding: 0.5rem 1rem; background: transparent; border: 1px solid #5a4020; color: #a8895c; border-radius: 4px; cursor: pointer; }
   button#secretsInstall { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
-  button#filesClose { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+  button#filesClose, button#keysSave { padding: 0.5rem 1rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
+  button#keysCancel { padding: 0.5rem 1rem; background: transparent; border: 1px solid #5a4020; color: #a8895c; border-radius: 4px; cursor: pointer; }
   .input-field { margin-top: 1.25rem; }
   .input-field label { margin-top: 0; }
   .input-field-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
@@ -136,6 +137,18 @@
       <div id="filesFields"></div>
       <div class="modal-actions">
         <button id="filesClose">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="keysOverlay">
+    <div id="keysModal">
+      <h2 id="keysTitle"></h2>
+      <p class="modal-hint">Stored securely on this computer, same as at install. Leave a field blank to keep what's already saved — only fields you type into get changed.</p>
+      <div id="keysFields"></div>
+      <div class="modal-actions">
+        <button id="keysCancel">Cancel</button>
+        <button id="keysSave">Save</button>
       </div>
     </div>
   </div>
@@ -236,6 +249,15 @@
           filesBtn.title = 'Provide or change a file this app asked you for'
           filesBtn.addEventListener('click', () => openFilesModal(agent))
           row.appendChild(filesBtn)
+        }
+
+        if (agent.secrets && agent.secrets.length > 0) {
+          const keysBtn = document.createElement('button')
+          keysBtn.className = 'small'
+          keysBtn.textContent = 'Update keys'
+          keysBtn.title = 'Change an API key or other secret this app was given at install'
+          keysBtn.addEventListener('click', () => openKeysModal(agent))
+          row.appendChild(keysBtn)
         }
 
         row.appendChild(removeBtn)
@@ -510,6 +532,58 @@
     document.getElementById('filesClose').addEventListener('click', () => {
       filesOverlay.style.display = 'none'
       filesFields.innerHTML = ''
+    })
+
+    // ---- Standalone "Update keys" modal (post-install secret rotation) ----
+    // Same idea as the Files modal above: reachable any time from an
+    // agent's row, not just at install/update. Fields always start blank --
+    // a stored secret is never sent back to the renderer to pre-fill, so
+    // blank has to mean "unchanged" rather than "clear this."
+    const keysOverlay = document.getElementById('keysOverlay')
+    const keysTitle = document.getElementById('keysTitle')
+    const keysFields = document.getElementById('keysFields')
+    let currentKeysAgentId = null
+
+    function closeKeysModal() {
+      keysOverlay.style.display = 'none'
+      keysFields.innerHTML = ''
+      currentKeysAgentId = null
+    }
+
+    function openKeysModal(agent) {
+      errorEl.style.display = 'none'
+      keysTitle.textContent = 'Update keys for "' + agent.name + '"'
+      keysFields.innerHTML = ''
+      for (const secret of agent.secrets) {
+        const label = document.createElement('label')
+        label.textContent = secret.label || secret.key
+        const input = document.createElement('input')
+        input.type = 'password'
+        input.dataset.key = secret.key
+        input.placeholder = 'Leave blank to keep the current value'
+        label.appendChild(input)
+        keysFields.appendChild(label)
+        if (secret.help) {
+          const help = document.createElement('p')
+          help.className = 'secret-help'
+          help.textContent = secret.help
+          keysFields.appendChild(help)
+        }
+      }
+      currentKeysAgentId = agent.id
+      keysOverlay.style.display = 'flex'
+    }
+
+    document.getElementById('keysCancel').addEventListener('click', closeKeysModal)
+
+    document.getElementById('keysSave').addEventListener('click', () => {
+      const values = {}
+      keysFields.querySelectorAll('input[data-key]').forEach((input) => {
+        if (input.value.trim()) values[input.dataset.key] = input.value
+      })
+      const id = currentKeysAgentId
+      closeKeysModal()
+      window.runner.updateAgentSecrets(id, values)
     })
   </script>
 </body>

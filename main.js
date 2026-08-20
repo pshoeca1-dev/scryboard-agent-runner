@@ -370,6 +370,16 @@ ipcMain.handle('update-agent-inputs', async (_event, id, key, filePaths) => {
     sendInstallError(err.message)
   }
 })
+// Standalone re-entry of secret values -- the "Update keys" button on an
+// already-installed agent's row. Same shape as update-agent-inputs above.
+ipcMain.handle('update-agent-secrets', async (_event, id, secretValues) => {
+  try {
+    const list = await manager.updateAgentSecrets(id, secretValues)
+    sendAgentList(list)
+  } catch (err) {
+    sendInstallError(err.message)
+  }
+})
 // Opens the agent's own folder in Explorer/Finder -- the answer to "where
 // did the file it made for me go," which until now only I could answer by
 // reading AppData paths out of the source. Prefers output/ directly, since

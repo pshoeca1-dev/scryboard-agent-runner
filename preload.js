@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('runner', {
   updateAgent: (id) => ipcRenderer.invoke('update-agent', id),
   chooseInputFiles: (accept, multiple) => ipcRenderer.invoke('choose-input-files', { accept, multiple }),
   updateAgentInputs: (id, key, filePaths) => ipcRenderer.invoke('update-agent-inputs', id, key, filePaths),
+  updateAgentSecrets: (id, secretValues) => ipcRenderer.invoke('update-agent-secrets', id, secretValues),
   openAgentFolder: (id) => ipcRenderer.invoke('open-agent-folder', id),
   acknowledgeOutput: (id) => ipcRenderer.invoke('acknowledge-output', id),
   getStartOnLogin: () => ipcRenderer.invoke('get-start-on-login'),
