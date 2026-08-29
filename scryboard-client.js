@@ -157,6 +157,41 @@ function createClient({ token, baseUrl, playback = null }) {
     return get('actions', params)
   }
 
+  // Text the buyer typed in answer to questions this app declared in its
+  // manifest's `settings` block. Returns { values, items } -- `values` for
+  // install-wide questions, `items` keyed by the item keys most recently
+  // pushed with setSettingItems().
+  //
+  // Distinct from this runner's OWN `inputs` manifest field, which is a
+  // file picker prompted for at install. Settings are text, collected by
+  // Scryboard's own UI, and editable by the buyer at any time.
+  //
+  // No read scope needed -- declaring the setting in the manifest IS the
+  // declaration. Outside a marketplace install (a hand-issued token, local
+  // development) this returns empty rather than failing, so the same agent
+  // code runs in both.
+  async function getSettings() {
+    return request('/api/agent/settings')
+  }
+
+  // Tell Scryboard WHICH things this app wants a per-item settings box
+  // for. Only meaningful when the manifest declares a setting with
+  // `"scope": "item"`.
+  //
+  // The only thing an app may write about settings: which items exist,
+  // never what any value is. `placeholder` is greyed-out suggestion text
+  // shown while a box is empty. Replaced wholesale on every call -- the
+  // app is the authority on what it currently offers, so send the full
+  // list each time. Values typed against an item that stops being sent are
+  // kept and come back if it returns. Limit: 50.
+  async function setSettingItems(items) {
+    if (!Array.isArray(items)) throw new Error('setSettingItems needs an array of { key, label, placeholder? }')
+    return request('/api/agent/settings/items', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    })
+  }
+
   async function writeEvent({ event_type, payload, session_id = null, participants = [] }) {
     if (!event_type) throw new Error('writeEvent needs an `event_type`')
     if (!payload || typeof payload !== 'object') throw new Error('writeEvent needs a `payload` object')
@@ -222,6 +257,8 @@ function createClient({ token, baseUrl, playback = null }) {
     setMediaTier,
     setItemAttributes,
     getActions,
+    getSettings,
+    setSettingItems,
     writeEvent,
     getEvents,
     playMedia,
