@@ -68,6 +68,12 @@
   .capability-consent { margin-top: 1.25rem; padding: 0.7rem 0.85rem; background: #2a2010; border: 1px solid #d4a840; border-radius: 6px; }
   .capability-consent strong { display: block; font-size: 0.88rem; color: #e8dcc0; }
   .capability-consent p { font-size: 0.78rem; color: #c0a276; margin: 0.25rem 0 0; line-height: 1.4; }
+  /* Third-party service disclosure (manifest `external`) -- the same facts
+     the Marketplace listing shows, repeated here before install. */
+  .external-disclosure { margin-top: 1rem; padding: 0.7rem 0.85rem; background: #14202a; border: 1px solid #6aa8d4; border-radius: 6px; }
+  .external-disclosure strong { display: block; font-size: 0.88rem; color: #dce8f0; }
+  .external-disclosure p { font-size: 0.78rem; color: #9cbcd4; margin: 0.25rem 0 0; line-height: 1.4; }
+  .external-disclosure p.cost { color: #e8c070; }
 </style>
 </head>
 <body>
@@ -413,6 +419,38 @@
         block.appendChild(title)
         block.appendChild(detail)
         inputsFields.appendChild(block)
+      }
+      // Third-party services the app talks to directly (its manifest's
+      // `external` block). On an update, only ones the installed version
+      // didn't already use. Clicking Install/Continue with this showing is
+      // the buyer going ahead knowing about it.
+      for (const service of info.external || []) {
+        const block = document.createElement('div')
+        block.className = 'external-disclosure'
+        const title = document.createElement('strong')
+        title.textContent = '🌐 This app sends data to ' + service.name + ', outside Scryboard.'
+        block.appendChild(title)
+        const lines = []
+        if (service.reads) lines.push('Reads: ' + service.reads)
+        if (service.writes) lines.push('Writes: ' + service.writes)
+        for (const line of lines) {
+          const p = document.createElement('p')
+          p.textContent = line
+          block.appendChild(p)
+        }
+        if (service.requiresPaidAccount) {
+          const cost = document.createElement('p')
+          cost.className = 'cost'
+          cost.textContent = 'Needs your own paid ' + service.name + ' account' +
+            (service.costNote ? ': ' + service.costNote : '.') +
+            ' Billed by ' + service.name + ', separately from Scryboard.'
+          block.appendChild(cost)
+        }
+        inputsFields.appendChild(block)
+      }
+      // Nothing to type or pick, only things to know -> don't say "needs:".
+      if (info.secrets.length === 0 && (info.inputs || []).length === 0) {
+        secretsTitle.textContent = (info.isUpdate ? 'Updating "' : 'Installing "') + info.agentName + '"'
       }
       secretsOverlay.style.display = 'flex'
     })
