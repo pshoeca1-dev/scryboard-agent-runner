@@ -131,11 +131,16 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     return request('/api/agent/canon-import')
   }
 
-  async function uploadMedia({ data, alt = null }) {
+  // visibility: optional 'table' for an image meant for a table-visible
+  // widget (players may then load it); leave it out and the server's
+  // default applies. Only sent when given, so an app passing it to an
+  // older Scryboard is harmless.
+  async function uploadMedia({ data, alt = null, visibility = null }) {
     if (!data) throw new Error('uploadMedia needs `data` (Buffer or Uint8Array of image bytes)')
     const form = new FormData()
     form.set('file', new Blob([data]))
     if (alt) form.set('alt', alt)
+    if (visibility) form.set('visibility', visibility)
     const res = await fetch(`${baseUrl}/api/agent/media`, {
       method: 'POST',
       signal: requestSignal(),
