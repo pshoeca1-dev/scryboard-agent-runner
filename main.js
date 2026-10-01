@@ -210,11 +210,14 @@ function createTray() {
   updateTrayMenu(manager?.list() ?? [])
 }
 
-function createWindow() {
+function createWindow(startHidden = false) {
   mainWindow = new BrowserWindow({
     width: 640,
     height: 560,
     icon: createWindowIcon(),
+    // Launched at login -> stay tray-only until clicked open; launched by
+    // hand (double-click, activate) -> show right away as before.
+    show: !startHidden,
     webPreferences: { preload: path.join(__dirname, 'preload.js') },
   })
   mainWindow.loadFile('index.html')
@@ -289,7 +292,7 @@ app.whenReady().then(async () => {
 
   const url = extractProtocolUrl(process.argv)
   if (url) pendingUrl = url
-  createWindow()
+  createWindow(app.getLoginItemSettings().wasOpenedAtLogin)
 })
 
 // Backgroundability means closing every window must NOT quit anymore --
