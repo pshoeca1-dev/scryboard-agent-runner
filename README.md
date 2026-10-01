@@ -148,6 +148,18 @@ everyone. If it ever has to change, change `RUNNER_ASSET_NAME` in the site's
 Each release should carry exactly one installer under that name. The version
 still lives in the release tag, the release title, and the app itself.
 
+The steps, for version X.Y.Z (already set in `package.json`):
+
+1. Merge the change into `main` on GitHub and pull it into your local copy.
+2. From this folder, run `npm.cmd run dist`. It writes
+   `dist\Scryboard-App-Runner-Setup.exe` and
+   `dist\Scryboard-App-Runner-Setup.exe.blockmap`.
+3. Install that `.exe` on your own machine once and check an app still runs.
+4. On GitHub, Releases → Draft a new release: tag `vX.Y.Z` on `main`, title
+   `Scryboard App Runner vX.Y.Z (proof of concept)`, a few plain lines on
+   what changed, attach both files from step 2, and publish it as the latest
+   release. The website's download button picks it up straight away.
+
 ## What happens when you install an app
 
 1. Calls `/api/agent/download` with your token — the server looks up which
@@ -158,4 +170,16 @@ still lives in the release tag, the release title, and the app itself.
    (token encrypted) so it survives a restart.
 4. Starts ticking it on the schedule from its manifest — faster while a
    session is live, slower otherwise — for as long as the Runner is running,
-   in the background or not.
+   in the background or not. A single run that takes over 10 minutes is
+   stopped and shown as an error, and the app tries again on its next run.
+
+Files and folders inside the package named `dev`, `state`, `output`,
+`input` or `node_modules` are never installed (the website ignores them at
+submission too), and Windows-style `folder\file` paths in the zip are read
+as folders.
+
+**Updating an app** writes the new version's files over the old ones and
+removes only the files the previous version shipped that the new one no
+longer has. Everything the app wrote for itself — `state/`, `output/`, the
+files you picked into `input/`, anything else — is left alone. (Before
+0.2.5 an update deleted `state/` and `output/`.)

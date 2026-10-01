@@ -18,6 +18,72 @@ const { loadStore, saveStore, agentFilesDir, encryptToken, decryptToken } = requ
 // app and linked into an agent's folder at install time.
 const VETTED_PACKAGES = ['@anthropic-ai/sdk', 'pdf-parse', 'jimp', 'zod', 'date-fns']
 
+// Folders a package never gets to ship into an install, wherever they
+// appear in a path -- the same list as isIgnorable() in the website's
+// src/lib/agentPackage.ts, which drops them before validating a
+// submission. The raw zip is what gets stored and downloaded, though, so
+// without this a developer's own state/ (dev fixtures, test ledgers) or
+// dev/ scripts would land in every buyer's install -- and on an update,
+// a shipped state/ file would overwrite the buyer's real one.
+const IGNORED_SEGMENTS = new Set(['.DS_Store', '.git', 'node_modules', 'dev', 'state', 'output', 'input'])
+
+// Folders an app writes to at runtime, never part of its code. An update
+// leaves them alone; see removeStaleCodeFiles.
+const RUNTIME_FOLDERS = new Set(['input', 'state', 'output', 'node_modules'])
+
+// Unzips a downloaded package into { 'relative/path': bytes }.
+//
+// Entry names are normalised first: a zip made on Windows can store
+// backslash separators ("lib\\render.mjs"), which the website's scanner
+// and this file's own ignore rules would otherwise read as one odd
+// filename. Anything that could write outside the app's own folder (an
+// absolute path, a drive letter, "..", a colon for an alternate data
+// stream) fails the whole install rather than being quietly skipped.
+function unpackPackage(bytes) {
+  const raw = unzipSync(bytes)
+  const files = {}
+  for (const [name, data] of Object.entries(raw)) {
+    const normalised = name.replace(/\\/g, '/')
+    if (normalised.endsWith('/') || normalised.startsWith('__MACOSX/')) continue
+    const segments = normalised.split('/').filter((s) => s !== '' && s !== '.')
+    if (segments.length === 0) continue
+    if (normalised.startsWith('/') || segments.some((s) => s === '..' || s.includes(':'))) {
+      throw new Error(`The package contains an unsafe file path ("${name}").`)
+    }
+    if (segments.some((s) => IGNORED_SEGMENTS.has(s))) continue
+    files[segments.join('/')] = data
+  }
+  return stripCommonRoot(files)
+}
+
+// The manifest's `external` block (third-party services the app talks to
+// directly -- see docs/agent-manifest.md on the website), trimmed to the
+// fields the install prompt shows. The website already validated it at
+// submission; this only guards against a malformed entry breaking the
+// prompt.
+function externalServices(manifest) {
+  if (!Array.isArray(manifest.external)) return []
+  return manifest.external
+    .filter((e) => e && typeof e.name === 'string' && e.name.trim())
+    .map((e) => ({
+      name: e.name,
+      reads: typeof e.reads === 'string' ? e.reads : '',
+      writes: typeof e.writes === 'string' ? e.writes : '',
+      requiresPaidAccount: e.requires_paid_account === true,
+      costNote: typeof e.cost_note === 'string' ? e.cost_note : '',
+    }))
+}
+
+// Writes a package's files into an app's folder as raw bytes (never
+// re-decoded as text, so an image or other binary asset survives intact).
+async function writePackageFiles(dir, files) {
+  for (const [filePath, content] of Object.entries(files)) {
+    const dest = path.join(dir, filePath)
+    await fs.mkdir(path.dirname(dest), { recursive: true })
+    await fs.writeFile(dest, content)
+  }
+}
+
 // Zip entries for a wrapped folder, macOS metadata, etc. -- same tolerance
 // as the web app's own upload handling (src/lib/agentPackage.ts), since
 // this reads the exact same files that path validated at submission time.
@@ -62,12 +128,6 @@ async function copyPickedFiles(agentDir, key, filePaths) {
   }
 }
 
-// An update overwrites an agent's own code, but a buyer's already-picked
-// input files (and whatever the agent itself has written to remember
-// state, e.g. processed.json) must survive it -- losing your character
-// sheet because the agent's code got a bugfix would be a bad surprise.
-// Removes everything in the directory except input/ and the node_modules
-// package junction, rather than the previous wipe-then-rewrite-everything.
 // Where an agent's code actually lives. A personal agent runs from the
 // folder the author already has on disk (see localPath below); everything
 // else runs from a copy this app downloaded and owns.
@@ -97,7 +157,11 @@ async function maxCodeMtime(dir) {
       return
     }
     for (const entry of entries) {
-      if (entry.name === 'node_modules' || entry.name === 'input' || entry.name.startsWith('.')) continue
+      // Runtime folders are skipped, not just input/: an app rewriting
+      // state/*.json every tick would otherwise bump the stamp every tick
+      // and re-import (and leak) a fresh copy of its whole module graph.
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      if (current === dir && RUNTIME_FOLDERS.has(entry.name)) continue
       const full = path.join(current, entry.name)
       if (entry.isDirectory()) {
         await walk(full)
@@ -132,17 +196,67 @@ async function scanOutputFiles(agentDir) {
   }
 }
 
-async function clearAgentCodeFiles(dir) {
-  let entries
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true })
-  } catch {
-    return
+// An update replaces an app's code, but everything the app itself has
+// written must survive it: state/ (ledgers, cursors, "already billed for
+// this" records), output/ (for some apps the only copy of what the buyer
+// paid for), a root-level processed.json, the buyer's input/ files. An
+// earlier version deleted everything except input/ and node_modules,
+// which wiped all of that on every update.
+//
+// So an update now only ever deletes files it can prove were CODE: the
+// ones the previous version's own package contained (record.codeFiles,
+// saved at install/update) that the new package no longer has. Anything
+// not on that list is left alone. An install from before that list was
+// kept has none, and then nothing is deleted at all -- a leftover file
+// from an old version is harmless (nothing imports a file its own code
+// no longer ships), a deleted ledger is not.
+async function removeStaleCodeFiles(dir, previousFiles, nextFiles) {
+  if (!Array.isArray(previousFiles)) return
+  const keep = new Set(nextFiles)
+  const root = path.resolve(dir)
+  for (const rel of previousFiles) {
+    if (keep.has(rel) || RUNTIME_FOLDERS.has(rel.split('/')[0])) continue
+    const full = path.resolve(root, rel)
+    if (!full.startsWith(root + path.sep)) continue // never outside the app's own folder
+    await fs.rm(full, { force: true }).catch(() => {})
+    // Tidy up folders the removed file leaves empty (rmdir refuses a
+    // non-empty one, which is exactly the stopping condition wanted).
+    let parent = path.dirname(full)
+    while (parent !== root && parent.startsWith(root + path.sep)) {
+      try { await fs.rmdir(parent) } catch { break }
+      parent = path.dirname(parent)
+    }
   }
-  for (const entry of entries) {
-    if (entry.name === 'input' || entry.name === 'node_modules') continue
-    await fs.rm(path.join(dir, entry.name), { recursive: true, force: true }).catch(() => {})
-  }
+}
+
+// Whether an installed app's record belongs to the campaign a download
+// link resolved to. By id when both sides have one; otherwise by name,
+// which is all older Scryboard versions send -- and which can't tell two
+// campaigns with the same name apart.
+function sameCampaign(record, campaignId, campaignName) {
+  if (record.campaignId && campaignId) return record.campaignId === campaignId
+  return record.campaignName === campaignName
+}
+
+// The longest one tick may run before the Runner gives up on it. Every
+// app's tick holds the shared tick lock (see withTickLock), so without a
+// cap one hung request -- a third-party API that never answers -- stopped
+// that app ticking AND every other installed app behind it, until the
+// Runner was restarted. Generous on purpose: a real tick that calls an
+// LLM and a text-to-speech service, or waits out a partner API's rate
+// limit, can legitimately take several minutes.
+const TICK_TIMEOUT_MS = 10 * 60 * 1000
+
+// Resolves/rejects with `promise`, or rejects with onTimeout()'s error
+// after `ms`. The original promise is not cancelled (JavaScript can't),
+// only no longer waited for -- onTimeout is where the caller cuts off
+// what it can.
+function withTimeout(promise, ms, onTimeout) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(onTimeout()), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
 }
 
 class AgentManager {
@@ -336,6 +450,9 @@ class AgentManager {
     }
     const agentName = decodeURIComponent(res.headers.get('x-agent-name') || 'agent')
     const campaignName = decodeURIComponent(res.headers.get('x-campaign-name') || '')
+    // Not sent by every Scryboard version yet. When it is, it's what tells
+    // two same-named campaigns apart below; see sameCampaign.
+    const campaignId = res.headers.get('x-campaign-id') || null
 
     // Same app, same campaign, already installed here -> this link carries
     // a RE-ISSUED token (the website's "Update and re-issue token" flow:
@@ -345,9 +462,10 @@ class AgentManager {
     // the app and set it up again -- that would throw away its secrets and
     // its state/ folder (ledgers, caches) for nothing.
     const existing = this.records.find((r) =>
-      !r.localPath && r.baseUrl === base && r.name === agentName && r.campaignName === campaignName)
+      !r.localPath && r.baseUrl === base && r.name === agentName && sameCampaign(r, campaignId, campaignName))
     if (existing) {
       existing.encryptedToken = encryptToken(token)
+      if (campaignId && !existing.campaignId) existing.campaignId = campaignId
       this.tokens.set(existing.id, token)
       await this.persist()
       this.setStatus(existing.id, 'idle', 'Token replaced — updating…')
@@ -356,7 +474,7 @@ class AgentManager {
 
     const bytes = new Uint8Array(await res.arrayBuffer())
 
-    const files = stripCommonRoot(unzipSync(bytes))
+    const files = unpackPackage(bytes)
     const manifestSource = files['scryboard.json']
     if (!manifestSource) throw new Error('No scryboard.json found in the downloaded package.')
     const manifest = JSON.parse(strFromU8(manifestSource))
@@ -373,15 +491,19 @@ class AgentManager {
     const requiredSecrets = (manifest.secrets ?? []).filter((s) => s.required !== false)
     const declaredInputs = manifest.inputs ?? []
     const declaredCapabilities = manifest.capabilities ?? []
+    const declaredExternal = externalServices(manifest)
     // Capabilities force the prompt even when nothing else would -- a
     // device ability (play sound through the speakers) is exactly the
-    // thing that must never be granted by a silent auto-finish.
-    if (requiredSecrets.length === 0 && declaredInputs.length === 0 && declaredCapabilities.length === 0) {
-      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues: {}, inputFiles: {} })
+    // thing that must never be granted by a silent auto-finish. Third-party
+    // services do too: campaign content leaving for another company, or a
+    // second bill, is something the buyer sees here as well as on the
+    // listing page.
+    if (requiredSecrets.length === 0 && declaredInputs.length === 0 && declaredCapabilities.length === 0 && declaredExternal.length === 0) {
+      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, campaignId, secretValues: {}, inputFiles: {} })
     }
 
     const pendingId = crypto.randomUUID()
-    this.pendingInstalls.set(pendingId, { files, manifest, token, base, agentName, campaignName })
+    this.pendingInstalls.set(pendingId, { files, manifest, token, base, agentName, campaignName, campaignId })
     return {
       needsSecrets: true,
       pendingId,
@@ -396,6 +518,7 @@ class AgentManager {
         required: i.required !== false,
       })),
       capabilities: declaredCapabilities,
+      external: declaredExternal,
     }
   }
 
@@ -545,21 +668,18 @@ class AgentManager {
       // live-read from its own folder (see capabilitiesFor), so this line
       // tells the author what their manifest currently grants.
       capabilities: manifest.capabilities ?? [],
+      external: externalServices(manifest),
     }
   }
 
-  async finishInstall({ files, manifest, token, base, agentName, campaignName, secretValues, inputFiles, localPath }) {
+  async finishInstall({ files, manifest, token, base, agentName, campaignName, campaignId, secretValues, inputFiles, localPath }) {
     const id = crypto.randomUUID()
     // A personal agent runs where the author keeps it. Nothing is written
     // into that folder except the packages junction and any input files
     // they picked -- their own source is never touched.
     const dir = localPath || agentFilesDir(id)
     if (!localPath) {
-      for (const [filePath, content] of Object.entries(files)) {
-        const dest = path.join(dir, filePath)
-        await fs.mkdir(path.dirname(dest), { recursive: true })
-        await fs.writeFile(dest, strFromU8(content))
-      }
+      await writePackageFiles(dir, files)
     }
 
     if ((manifest.dependencies ?? []).length > 0) {
@@ -581,6 +701,7 @@ class AgentManager {
       id,
       name: agentName,
       campaignName,
+      campaignId: campaignId || null,
       baseUrl: base,
       entry: manifest.entry,
       version: manifest.version || null,
@@ -594,6 +715,13 @@ class AgentManager {
       // agent this is informational only -- capabilitiesFor() live-reads
       // the folder's own manifest instead.
       capabilities: manifest.capabilities || [],
+      // Third-party services shown (and accepted) at this install -- an
+      // update that adds one prompts again; see updateAgent.
+      external: externalServices(manifest),
+      // Every file this install's package wrote -- the only files a later
+      // update is allowed to delete (see removeStaleCodeFiles). Null for a
+      // personal agent, whose folder the Runner never writes code into.
+      codeFiles: localPath ? null : Object.keys(files),
       // Set only for personal agents -- the folder the author keeps their
       // code in. Its presence is what marks this agent as "runs from where
       // it already lives" everywhere else in this file.
@@ -648,7 +776,7 @@ class AgentManager {
       throw new Error(body.error || `Update check failed (HTTP ${res.status})`)
     }
     const bytes = new Uint8Array(await res.arrayBuffer())
-    const files = stripCommonRoot(unzipSync(bytes))
+    const files = unpackPackage(bytes)
     const manifestSource = files['scryboard.json']
     if (!manifestSource) throw new Error('No scryboard.json found in the downloaded package.')
     const manifest = JSON.parse(strFromU8(manifestSource))
@@ -680,7 +808,24 @@ class AgentManager {
       (c) => !(record.capabilities || []).includes(c)
     )
 
-    if (missingSecrets.length > 0 || missingInputs.length > 0 || newCapabilities.length > 0) {
+    // Same for a third-party service the installed version didn't talk to
+    // (or one that newly needs a paid account): the buyer hears about it
+    // before the new code runs, not from a bill. An install from before
+    // the record kept this list falls back to the manifest still on disk,
+    // which is the installed version's own.
+    let previousExternal = record.external
+    if (!Array.isArray(previousExternal)) {
+      try {
+        previousExternal = externalServices(JSON.parse(await fs.readFile(path.join(dir, 'scryboard.json'), 'utf8')))
+      } catch {
+        previousExternal = []
+      }
+    }
+    const newExternal = externalServices(manifest).filter((e) => !previousExternal.some(
+      (p) => p.name === e.name && (p.requiresPaidAccount || !e.requiresPaidAccount)
+    ))
+
+    if (missingSecrets.length > 0 || missingInputs.length > 0 || newCapabilities.length > 0 || newExternal.length > 0) {
       const pendingId = crypto.randomUUID()
       this.pendingInstalls.set(pendingId, { files, manifest, updateId: id })
       return {
@@ -698,6 +843,7 @@ class AgentManager {
           required: true,
         })),
         capabilities: newCapabilities,
+        external: newExternal,
       }
     }
 
@@ -705,10 +851,11 @@ class AgentManager {
   }
 
   // Overwrites the agent's own code with whatever the token currently
-  // resolves to. Everything except input/ and node_modules is cleared
-  // first -- not just overwritten -- so a file removed in the new version
-  // can't linger and get imported by accident, while a buyer's
-  // already-picked input files and the shared package junction survive.
+  // resolves to. The new files are written first, then only the previous
+  // version's own code files that the new one dropped are removed -- so
+  // state/, output/, input/, the package junction and anything else the
+  // app wrote for itself all survive (see removeStaleCodeFiles), and a
+  // failure part-way leaves extra files behind rather than missing ones.
   async finishUpdate(id, { files, manifest, inputFiles }) {
     const record = this.records.find((r) => r.id === id)
     if (!record) throw new Error('App no longer installed.')
@@ -719,12 +866,9 @@ class AgentManager {
     // There's nothing to write there anyway -- their code is already the
     // newest version of itself.
     if (!record.localPath) {
-      await clearAgentCodeFiles(dir)
-      for (const [filePath, content] of Object.entries(files)) {
-        const dest = path.join(dir, filePath)
-        await fs.mkdir(path.dirname(dest), { recursive: true })
-        await fs.writeFile(dest, strFromU8(content))
-      }
+      await writePackageFiles(dir, files)
+      await removeStaleCodeFiles(dir, record.codeFiles, Object.keys(files))
+      record.codeFiles = Object.keys(files)
     }
     if ((manifest.dependencies ?? []).length > 0) {
       await this.linkPackages(dir)
@@ -743,6 +887,7 @@ class AgentManager {
     // version DROPPED comes off the record too; consent doesn't outlive
     // the declaration.
     record.capabilities = manifest.capabilities || []
+    record.external = externalServices(manifest)
     await this.persist()
     this.setStatus(id, 'idle', `Updated to v${record.version || '?'}`)
     return this.list()
@@ -903,7 +1048,11 @@ class AgentManager {
         }
       : null
 
-    const client = createClient({ token, baseUrl: record.baseUrl, playback })
+    // Aborted if this tick runs past TICK_TIMEOUT_MS: every Scryboard call
+    // the abandoned tick still makes then fails at once, so it can't keep
+    // writing after the Runner has given up on it.
+    const tickAbort = new AbortController()
+    const client = createClient({ token, baseUrl: record.baseUrl, playback, signal: tickAbort.signal })
 
     let sessionActive = false
     let session = null
@@ -952,7 +1101,13 @@ class AgentManager {
         if (typeof mod.tick !== 'function') {
           throw new Error(`${record.entry} does not export an async tick(scryboard) function.`)
         }
-        await mod.tick(client)
+        await withTimeout(mod.tick(client), TICK_TIMEOUT_MS, () => {
+          tickAbort.abort()
+          return new Error(
+            `Stopped a run that took longer than ${Math.round(TICK_TIMEOUT_MS / 60000)} minutes (a request probably hung). ` +
+            'It will try again on its next scheduled run.'
+          )
+        })
         // scanOutputFiles never throws (see its own try/catch) -- a missing
         // or unreadable output/ just means no new-file highlight this tick.
         record.outputFiles = await scanOutputFiles(agentDir)

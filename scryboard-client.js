@@ -21,10 +21,24 @@
 const fsPromises = require('node:fs/promises')
 const { MEDIA_TYPES, MAX_MEDIA_BYTES } = require('./playback')
 
-function createClient({ token, baseUrl, playback = null }) {
+// No single Scryboard request may take longer than this. Node's fetch has
+// no overall timeout of its own, and a request that never answers would
+// otherwise hold the whole tick (see TICK_TIMEOUT_MS in agent-runner.js).
+const REQUEST_TIMEOUT_MS = 2 * 60 * 1000
+
+// `signal` is the tick's own abort signal from agent-runner.js: once a
+// tick is abandoned for running too long, every call it still makes
+// fails immediately instead of writing after the Runner gave up on it.
+function createClient({ token, baseUrl, playback = null, signal = null }) {
+  function requestSignal() {
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    return signal ? AbortSignal.any([signal, timeout]) : timeout
+  }
+
   async function request(path, options = {}) {
     const res = await fetch(`${baseUrl}${path}`, {
       ...options,
+      signal: requestSignal(),
       headers: {
         Authorization: `Bearer ${token}`,
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
@@ -60,12 +74,15 @@ function createClient({ token, baseUrl, playback = null }) {
     return sessions.find((s) => s.status === 'active') ?? null
   }
 
-  async function pushWidget({ widget, layout, placement = 'session_dashboard', visibility = 'dm', session_id = null }) {
+  // preferred_height: optional 1-12 grid rows, a hint for how tall the
+  // card first opens (the reference client has had it since phase BH;
+  // this one silently dropped it until 0.2.5).
+  async function pushWidget({ widget, layout, placement = 'session_dashboard', visibility = 'dm', session_id = null, preferred_height = null }) {
     if (!widget) throw new Error('pushWidget needs a `widget` name')
     if (!layout) throw new Error('pushWidget needs a `layout`')
     return request('/api/agent/widgets', {
       method: 'POST',
-      body: JSON.stringify({ widget, layout, placement, visibility, session_id }),
+      body: JSON.stringify({ widget, layout, placement, visibility, session_id, preferred_height }),
     })
   }
 
@@ -114,13 +131,19 @@ function createClient({ token, baseUrl, playback = null }) {
     return request('/api/agent/canon-import')
   }
 
-  async function uploadMedia({ data, alt = null }) {
+  // visibility: optional 'table' for an image meant for a table-visible
+  // widget (players may then load it); leave it out and the server's
+  // default applies. Only sent when given, so an app passing it to an
+  // older Scryboard is harmless.
+  async function uploadMedia({ data, alt = null, visibility = null }) {
     if (!data) throw new Error('uploadMedia needs `data` (Buffer or Uint8Array of image bytes)')
     const form = new FormData()
     form.set('file', new Blob([data]))
     if (alt) form.set('alt', alt)
+    if (visibility) form.set('visibility', visibility)
     const res = await fetch(`${baseUrl}/api/agent/media`, {
       method: 'POST',
+      signal: requestSignal(),
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     })
