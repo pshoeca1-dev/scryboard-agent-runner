@@ -31,7 +31,9 @@
   button#go { padding: 0.5rem 1rem; margin-top: 0.75rem; background: #4a3018; border: 1px solid #c9a84c55; color: #c9a84c; border-radius: 4px; cursor: pointer; }
 
   #secretsOverlay, #filesOverlay, #folderOverlay, #keysOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); align-items: center; justify-content: center; }
-  #secretsModal, #filesModal, #folderModal, #keysModal { width: 420px; max-width: 90vw; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
+  /* Capped to the window and scrollable: the install prompt's outside-service
+     disclosures (0.2.5) can make it taller than the window. */
+  #secretsModal, #filesModal, #folderModal, #keysModal { width: 420px; max-width: 90vw; max-height: calc(100vh - 2rem); overflow-y: auto; box-sizing: border-box; background: #241408; border: 1px solid #c9a84c55; border-radius: 8px; padding: 1.25rem; }
   #secretsModal h2, #filesModal h2, #folderModal h2, #keysModal h2 { font-size: 1rem; margin: 0 0 0.4rem; color: #d4a840; }
   #secretsModal p.modal-hint, #filesModal p.modal-hint, #folderModal p.modal-hint, #keysModal p.modal-hint { font-size: 0.8rem; color: #a8895c; margin-top: 0; }
   #startOnLoginRow { display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.7rem 0.85rem; margin-bottom: 1rem; background: #2c1a0c; border: 1px solid #5a4020; border-radius: 6px; cursor: pointer; }
