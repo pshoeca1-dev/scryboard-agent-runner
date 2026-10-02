@@ -135,6 +135,23 @@ function agentDirFor(record, id) {
   return record.localPath || agentFilesDir(id)
 }
 
+// Two installs are the same app when they have the same name from the same
+// Scryboard site -- e.g. Previously On in two campaigns. Their keys are
+// shared (see savedSecretsFor and updateAgentSecrets).
+function sameApp(a, b) {
+  return a.name === b.name && a.baseUrl === b.baseUrl
+}
+
+// Only the saved keys this manifest actually declares, non-empty.
+function pickSecrets(manifest, values) {
+  const out = {}
+  for (const s of manifest.secrets ?? []) {
+    const v = values?.[s.key]
+    if (v && String(v).trim()) out[s.key] = v
+  }
+  return out
+}
+
 // Newest mtime across an agent's own code, used to cache-bust the dynamic
 // import in runTick.
 //
@@ -492,23 +509,30 @@ class AgentManager {
     const declaredInputs = manifest.inputs ?? []
     const declaredCapabilities = manifest.capabilities ?? []
     const declaredExternal = externalServices(manifest)
+    // Keys belong to the app, not the campaign: installing an app this
+    // computer already runs for another campaign reuses the keys saved for
+    // it, instead of asking the buyer to paste them all again.
+    const saved = this.savedSecretsFor(agentName, base)
+    const savedValues = pickSecrets(manifest, saved?.values)
+    const stillNeeded = requiredSecrets.filter((s) => !savedValues[s.key])
     // Capabilities force the prompt even when nothing else would -- a
     // device ability (play sound through the speakers) is exactly the
     // thing that must never be granted by a silent auto-finish. Third-party
     // services do too: campaign content leaving for another company, or a
     // second bill, is something the buyer sees here as well as on the
     // listing page.
-    if (requiredSecrets.length === 0 && declaredInputs.length === 0 && declaredCapabilities.length === 0 && declaredExternal.length === 0) {
-      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, campaignId, secretValues: {}, inputFiles: {} })
+    if (stillNeeded.length === 0 && declaredInputs.length === 0 && declaredCapabilities.length === 0 && declaredExternal.length === 0) {
+      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, campaignId, secretValues: savedValues, inputFiles: {} })
     }
 
     const pendingId = crypto.randomUUID()
-    this.pendingInstalls.set(pendingId, { files, manifest, token, base, agentName, campaignName, campaignId })
+    this.pendingInstalls.set(pendingId, { files, manifest, token, base, agentName, campaignName, campaignId, savedValues })
     return {
       needsSecrets: true,
       pendingId,
       agentName,
-      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '' })),
+      reuseFrom: Object.keys(savedValues).length > 0 ? saved.campaignName || 'another campaign' : null,
+      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '', saved: !!savedValues[s.key] })),
       inputs: declaredInputs.map((i) => ({
         key: i.key,
         label: i.label || i.key,
@@ -563,9 +587,15 @@ class AgentManager {
       return this.finishUpdate(pending.updateId, { ...pending, inputFiles })
     }
 
+    // A field left blank keeps the key saved for this app on another
+    // campaign (see beginInstall); a typed value is used for this install.
+    const merged = { ...(pending.savedValues || {}) }
+    for (const [key, value] of Object.entries(secretValues || {})) {
+      if (value && String(value).trim()) merged[key] = value
+    }
     const required = (pending.manifest.secrets ?? []).filter((s) => s.required !== false)
     for (const s of required) {
-      if (!secretValues[s.key] || !String(secretValues[s.key]).trim()) {
+      if (!merged[s.key] || !String(merged[s.key]).trim()) {
         throw new Error(`Missing a value for "${s.label || s.key}".`)
       }
     }
@@ -576,7 +606,7 @@ class AgentManager {
       }
     }
 
-    return this.finishInstall({ ...pending, secretValues, inputFiles })
+    return this.finishInstall({ ...pending, secretValues: merged, inputFiles })
   }
 
   async hasInputFiles(agentDir, key) {
@@ -642,20 +672,24 @@ class AgentManager {
     for (const i of manifest.inputs ?? []) {
       if (!(await this.hasInputFiles(folderPath, i.key))) promptInputs.push(i)
     }
+    const saved = this.savedSecretsFor(pending.agentName, pending.base)
+    const savedValues = pickSecrets(manifest, saved?.values)
+    const stillNeeded = requiredSecrets.filter((s) => !savedValues[s.key])
 
-    const next = { ...pending, manifest, localPath: folderPath }
+    const next = { ...pending, manifest, localPath: folderPath, savedValues }
     this.pendingInstalls.set(pendingId, next)
 
-    if (requiredSecrets.length === 0 && promptInputs.length === 0) {
+    if (stillNeeded.length === 0 && promptInputs.length === 0) {
       this.pendingInstalls.delete(pendingId)
-      return { installed: await this.finishInstall({ ...next, secretValues: {}, inputFiles: {} }) }
+      return { installed: await this.finishInstall({ ...next, secretValues: savedValues, inputFiles: {} }) }
     }
 
     return {
       needsSecrets: true,
       pendingId,
       agentName: pending.agentName,
-      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '' })),
+      reuseFrom: Object.keys(savedValues).length > 0 ? saved.campaignName || 'another campaign' : null,
+      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '', saved: !!savedValues[s.key] })),
       inputs: promptInputs.map((i) => ({
         key: i.key,
         label: i.label || i.key,
@@ -921,23 +955,45 @@ class AgentManager {
   // password-masked and never round-tripped back out), so a blank field is
   // the only way to say "leave this one alone" -- only keys with a
   // non-empty typed value are touched.
-  async updateAgentSecrets(id, secretValues) {
+  //
+  // applyToAll: also save the typed keys on every other install of the same
+  // app (same name, same Scryboard site) -- keys belong to the app, so one
+  // change usually means every campaign running it. Each install only takes
+  // the keys its own manifest declares.
+  async updateAgentSecrets(id, secretValues, applyToAll = false) {
     const record = this.records.find((r) => r.id === id)
     if (!record) throw new Error('App not found.')
-    const existing = this.secrets.get(id) || {}
-    const encryptedSecrets = { ...(record.encryptedSecrets || {}) }
-    const updatedValues = { ...existing }
-    for (const [key, value] of Object.entries(secretValues || {})) {
-      if (!value || !String(value).trim()) continue
-      encryptedSecrets[key] = encryptToken(value)
-      updatedValues[key] = value
-      this.allSecretKeys.add(key)
+    const targets = applyToAll ? this.records.filter((r) => sameApp(r, record)) : [record]
+    for (const target of targets) {
+      const declared = new Set((target.secrets || []).map((s) => s.key))
+      const existing = this.secrets.get(target.id) || {}
+      const encryptedSecrets = { ...(target.encryptedSecrets || {}) }
+      const updatedValues = { ...existing }
+      for (const [key, value] of Object.entries(secretValues || {})) {
+        if (!value || !String(value).trim()) continue
+        if (target !== record && !declared.has(key)) continue
+        encryptedSecrets[key] = encryptToken(value)
+        updatedValues[key] = value
+        this.allSecretKeys.add(key)
+      }
+      target.encryptedSecrets = encryptedSecrets
+      this.secrets.set(target.id, updatedValues)
     }
-    record.encryptedSecrets = encryptedSecrets
-    this.secrets.set(id, updatedValues)
     await this.persist()
-    this.setStatus(id, record.status || 'idle', record.statusDetail || '')
+    for (const target of targets) this.setStatus(target.id, target.status || 'idle', target.statusDetail || '')
     return this.list()
+  }
+
+  // The keys saved for the most recently installed copy of this app (same
+  // name, same Scryboard site) on this computer, or null. Decrypted values
+  // stay in this process; the renderer only learns which keys are covered.
+  savedSecretsFor(agentName, base) {
+    const candidates = this.records
+      .filter((r) => r.name === agentName && r.baseUrl === base)
+      .filter((r) => Object.keys(this.secrets.get(r.id) || {}).length > 0)
+      .sort((a, b) => String(b.installedAt || '').localeCompare(String(a.installedAt || '')))
+    const from = candidates[0]
+    return from ? { campaignName: from.campaignName, values: this.secrets.get(from.id) || {} } : null
   }
 
   // Bridges the gap between where an agent's code lives (this app's own

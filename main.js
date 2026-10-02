@@ -375,9 +375,9 @@ ipcMain.handle('update-agent-inputs', async (_event, id, key, filePaths) => {
 })
 // Standalone re-entry of secret values -- the "Update keys" button on an
 // already-installed agent's row. Same shape as update-agent-inputs above.
-ipcMain.handle('update-agent-secrets', async (_event, id, secretValues) => {
+ipcMain.handle('update-agent-secrets', async (_event, id, secretValues, applyToAll) => {
   try {
-    const list = await manager.updateAgentSecrets(id, secretValues)
+    const list = await manager.updateAgentSecrets(id, secretValues, !!applyToAll)
     sendAgentList(list)
   } catch (err) {
     sendInstallError(err.message)
