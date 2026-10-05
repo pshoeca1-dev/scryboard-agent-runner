@@ -10,6 +10,7 @@ const crypto = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const { unzipSync, strFromU8 } = require('fflate')
 const { createClient } = require('./scryboard-client')
+const { WakeListener } = require('./wake-listener')
 const { loadStore, saveStore, agentFilesDir, encryptToken, decryptToken } = require('./store')
 
 // Must stay in sync with VETTED_PACKAGES in src/lib/agentPackage.ts (the
@@ -263,6 +264,8 @@ function sameCampaign(record, campaignId, campaignName) {
 // LLM and a text-to-speech service, or waits out a partner API's rate
 // limit, can legitimately take several minutes.
 const TICK_TIMEOUT_MS = 10 * 60 * 1000
+// Nudge-started ticks of one app are at least this far apart (0.2.7).
+const WAKE_GAP_MS = 3 * 1000
 
 // Resolves/rejects with `promise`, or rejects with onTimeout()'s error
 // after `ms`. The original promise is not cancelled (JavaScript can't),
@@ -283,6 +286,11 @@ class AgentManager {
     this.secrets = new Map()   // id -> { KEY: decrypted value }, same -- memory only
     this.timers = new Map()    // id -> pending setTimeout handle
     this.stopped = new Set()
+    // "Run now" nudges (0.2.7) -- see wake-listener.js and wake() below.
+    this.wakers = new Map()    // id -> WakeListener
+    this.inFlight = new Set()  // ids whose tick is running right now
+    this.wakeAgain = new Set() // ids nudged mid-tick: run once more when it ends
+    this.lastWokenAt = new Map() // id -> ms of the last nudge-started tick
     this.pendingInstalls = new Map() // pendingId -> download already done, waiting on secret input
     this.allSecretKeys = new Set()   // every secret key name ever used, across every agent --
                                       // lets runTick wipe all of them before/after each tick so one
@@ -485,6 +493,9 @@ class AgentManager {
       if (campaignId && !existing.campaignId) existing.campaignId = campaignId
       this.tokens.set(existing.id, token)
       await this.persist()
+      // The old token's wake topic is dead; listen on the new one's.
+      this.stopWaker(existing.id)
+      this.startWaker(existing.id)
       this.setStatus(existing.id, 'idle', 'Token replaced — updating…')
       return this.updateAgent(existing.id)
     }
@@ -1034,6 +1045,7 @@ class AgentManager {
 
   async remove(id) {
     this.stopped.add(id)
+    this.stopWaker(id)
     // A removed app doesn't get to keep making sound.
     this.playback?.stop(id)
     const timer = this.timers.get(id)
@@ -1065,6 +1077,7 @@ class AgentManager {
       this.scheduleLoop(id)
     } else {
       this.stopped.add(id)
+      this.stopWaker(id)
       // Pausing an app silences it too -- "make it stop" is half of why
       // anyone reaches for Pause on an audio-playing app.
       this.playback?.stop(id)
@@ -1077,13 +1090,88 @@ class AgentManager {
 
   scheduleLoop(id) {
     this.stopped.delete(id)
+    this.startWaker(id)
     this.runTick(id)
+  }
+
+  // ---- "Run now" nudges (0.2.7) ----
+  //
+  // Scryboard sends one when this app's button is clicked or its settings
+  // box is saved, so the app reacts in a second or two instead of on its
+  // next timer. The timer itself is untouched: a nudge only ever brings a
+  // tick FORWARD, and an app on a server or network without the wake
+  // channel simply keeps polling as before.
+  startWaker(id) {
+    if (this.wakers.has(id)) return
+    const record = this.records.find((r) => r.id === id)
+    if (!record?.baseUrl) return
+    const waker = new WakeListener({
+      fetchChannel: async () => {
+        const token = this.tokens.get(id)
+        if (!token) throw Object.assign(new Error('no token'), { status: 401 })
+        const res = await fetch(`${record.baseUrl}/api/agent/wake-channel`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: AbortSignal.timeout(15 * 1000),
+        })
+        if (!res.ok) throw Object.assign(new Error(`wake-channel HTTP ${res.status}`), { status: res.status })
+        return (await res.json()).data
+      },
+      onWake: () => this.wake(id),
+    })
+    this.wakers.set(id, waker)
+    waker.start()
+  }
+
+  stopWaker(id) {
+    const waker = this.wakers.get(id)
+    if (waker) waker.stop()
+    this.wakers.delete(id)
+  }
+
+  // Bring this app's next tick forward to now. A few quick clicks are one
+  // early tick, not a burst: mid-tick nudges collapse into a single re-run
+  // when the tick ends, and nudge-started ticks are at least WAKE_GAP_MS
+  // apart (so a stream of clicks, or a forged stream of nudges, can't run
+  // an app -- and whatever it spends -- faster than that).
+  wake(id) {
+    if (this.stopped.has(id)) return
+    if (!this.records.some((r) => r.id === id && r.enabled)) return
+    if (this.inFlight.has(id)) {
+      this.wakeAgain.add(id)
+      return
+    }
+    const since = Date.now() - (this.lastWokenAt.get(id) ?? 0)
+    const delay = Math.max(0, WAKE_GAP_MS - since)
+    const timer = this.timers.get(id)
+    if (timer) clearTimeout(timer)
+    this.timers.set(id, setTimeout(() => {
+      this.lastWokenAt.set(id, Date.now())
+      this.runTick(id)
+    }, delay))
   }
 
   async runTick(id) {
     if (this.stopped.has(id)) return
+    // A nudge can land while this app's own timer is also due; never run
+    // the same app twice at once.
+    if (this.inFlight.has(id)) {
+      this.wakeAgain.add(id)
+      return
+    }
     const record = this.records.find((r) => r.id === id)
     if (!record) return
+    this.inFlight.add(id)
+    try {
+      await this.runTickOnce(id, record)
+    } finally {
+      this.inFlight.delete(id)
+      // Nudged while running: the tick that just ended may have read its
+      // clicks before the new one landed, so run once more.
+      if (this.wakeAgain.delete(id)) this.wake(id)
+    }
+  }
+
+  async runTickOnce(id, record) {
     const token = this.tokens.get(id)
     if (!token) {
       this.setStatus(id, 'error', 'No credentials available.')
