@@ -172,6 +172,15 @@ The steps, for version X.Y.Z (already set in `package.json`):
    session is live, slower otherwise — for as long as the Runner is running,
    in the background or not. A single run that takes over 10 minutes is
    stopped and shown as an error, and the app tries again on its next run.
+5. Also listens (0.2.7+) for a "run now" nudge Scryboard sends when one of
+   the app's buttons is clicked or one of its settings is saved, and runs
+   the app straight away instead of waiting for its timer. The nudge is a
+   Supabase Realtime broadcast on a topic only that app's token can name
+   (handed out by `/api/agent/wake-channel`); it carries no data, so the
+   app still reads the click or the new value itself. A burst of clicks is
+   one early run (nudge-started runs are at least 3 seconds apart, never
+   two at once), and if the channel is unavailable — an older Scryboard,
+   no network — the app just keeps its normal timer. See `wake-listener.js`.
 
 Files and folders inside the package named `dev`, `state`, `output`,
 `input` or `node_modules` are never installed (the website ignores them at
