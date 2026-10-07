@@ -136,11 +136,29 @@ function agentDirFor(record, id) {
   return record.localPath || agentFilesDir(id)
 }
 
+// The addresses that all serve the one live Scryboard (same site, same
+// database). An install from any of them counts as the same site, so a key
+// saved from one is reused from another.
+const LIVE_SITE_HOSTS = ['scryboard.net', 'scryboard.vercel.app']
+
+function siteOf(baseUrl) {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/^www\./, '')
+    return LIVE_SITE_HOSTS.includes(host) ? 'live' : String(baseUrl).replace(/\/+$/, '')
+  } catch {
+    return baseUrl
+  }
+}
+
+function sameSite(a, b) {
+  return siteOf(a) === siteOf(b)
+}
+
 // Two installs are the same app when they have the same name from the same
 // Scryboard site -- e.g. Previously On in two campaigns. Their keys are
 // shared (see savedSecretsFor and updateAgentSecrets).
 function sameApp(a, b) {
-  return a.name === b.name && a.baseUrl === b.baseUrl
+  return a.name === b.name && sameSite(a.baseUrl, b.baseUrl)
 }
 
 // Only the saved keys this manifest actually declares, non-empty.
@@ -487,7 +505,7 @@ class AgentManager {
     // the app and set it up again -- that would throw away its secrets and
     // its state/ folder (ledgers, caches) for nothing.
     const existing = this.records.find((r) =>
-      !r.localPath && r.baseUrl === base && r.name === agentName && sameCampaign(r, campaignId, campaignName))
+      !r.localPath && sameSite(r.baseUrl, base) && r.name === agentName && sameCampaign(r, campaignId, campaignName))
     if (existing) {
       existing.encryptedToken = encryptToken(token)
       if (campaignId && !existing.campaignId) existing.campaignId = campaignId
@@ -1000,7 +1018,7 @@ class AgentManager {
   // stay in this process; the renderer only learns which keys are covered.
   savedSecretsFor(agentName, base) {
     const candidates = this.records
-      .filter((r) => r.name === agentName && r.baseUrl === base)
+      .filter((r) => r.name === agentName && sameSite(r.baseUrl, base))
       .filter((r) => Object.keys(this.secrets.get(r.id) || {}).length > 0)
       .sort((a, b) => String(b.installedAt || '').localeCompare(String(a.installedAt || '')))
     const from = candidates[0]
