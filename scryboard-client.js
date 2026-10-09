@@ -267,6 +267,66 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     if (playback) playback.stop()
   }
 
+  // ------------------------------------------------------------
+  // Services through Scryboard (server-held keys): Scryboard holds the
+  // key, this app never does. Same surface as agent-runtime/scryboard.mjs.
+  // ------------------------------------------------------------
+
+  // Longer than REQUEST_TIMEOUT_MS: Scryboard may wait up to two minutes
+  // for the provider, twice for Claude.
+  function serviceSignal(ms) {
+    const timeout = AbortSignal.timeout(ms)
+    return signal ? AbortSignal.any([signal, timeout]) : timeout
+  }
+
+  // An Error carrying err.status (and err.type for Claude) with the
+  // server's plain sentence, e.g. "You've used all 25 of this month's uses".
+  async function serviceError(res) {
+    let body = null
+    try { body = await res.json() } catch { /* not JSON */ }
+    const message = (body && (typeof body.message === 'string' ? body.message : body.error?.message ?? body.error))
+      || `Request failed (HTTP ${res.status})`
+    const err = new Error(typeof message === 'string' ? message : JSON.stringify(message))
+    err.status = res.status
+    if (body?.error?.type) err.type = body.error.type
+    return err
+  }
+
+  // Claude on the buyer's own Anthropic key saved in Scryboard. Takes and
+  // returns exactly what Anthropic's Messages API does.
+  async function claude(params) {
+    const res = await fetch(`${baseUrl}/api/agent/services/claude/v1/messages`, {
+      method: 'POST',
+      signal: serviceSignal(5 * 60 * 1000),
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(params ?? {}),
+    })
+    if (!res.ok) throw await serviceError(res)
+    return res.json()
+  }
+
+  // Speech in one of the developer's ElevenLabs voices, on the developer's
+  // key. Returns { audio: Buffer (MP3), uses: { used, limit, period,
+  // resetsAt } | null }.
+  async function speak({ voice_id, text, model_id, voice_settings } = {}) {
+    const res = await fetch(`${baseUrl}/api/agent/services/elevenlabs/tts`, {
+      method: 'POST',
+      signal: serviceSignal(3 * 60 * 1000),
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voice_id, text, model_id, voice_settings }),
+    })
+    if (!res.ok) throw await serviceError(res)
+    const audio = Buffer.from(await res.arrayBuffer())
+    const limit = res.headers.get('x-scryboard-uses-limit')
+    const uses = limit ? {
+      used: Number(res.headers.get('x-scryboard-uses')),
+      limit: Number(limit),
+      period: res.headers.get('x-scryboard-uses-period'),
+      resetsAt: res.headers.get('x-scryboard-uses-reset'),
+    } : null
+    return { audio, uses }
+  }
+
   return {
     get,
     getActiveSession,
@@ -287,6 +347,8 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     playMedia,
     playAudio,
     stopMedia,
+    claude,
+    speak,
   }
 }
 

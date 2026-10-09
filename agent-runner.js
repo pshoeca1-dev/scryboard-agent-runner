@@ -63,8 +63,7 @@ function unpackPackage(bytes) {
 // submission; this only guards against a malformed entry breaking the
 // prompt.
 function externalServices(manifest) {
-  if (!Array.isArray(manifest.external)) return []
-  return manifest.external
+  const direct = !Array.isArray(manifest.external) ? [] : manifest.external
     .filter((e) => e && typeof e.name === 'string' && e.name.trim())
     .map((e) => ({
       name: e.name,
@@ -72,6 +71,36 @@ function externalServices(manifest) {
       writes: typeof e.writes === 'string' ? e.writes : '',
       requiresPaidAccount: e.requires_paid_account === true,
       costNote: typeof e.cost_note === 'string' ? e.cost_note : '',
+    }))
+  return [...direct, ...scryboardServices(manifest)]
+}
+
+// The manifest's `services` block: providers the app reaches THROUGH
+// Scryboard, which holds the key (server-held keys, 0.2.9). Nothing to type
+// here -- the buyer only needs to know whose key pays. Shown in the same
+// install-prompt list as `external`, flagged viaScryboard.
+const SCRYBOARD_SERVICE_TEXT = {
+  claude: {
+    name: 'Claude (Anthropic)',
+    note: 'Uses the Anthropic key saved in your Scryboard account (Settings, then "Your own AI key"), billed to your own Anthropic account. No key is entered here.',
+  },
+  elevenlabs_tts: {
+    name: 'ElevenLabs voices',
+    note: "Provided by the app's developer: you don't need an ElevenLabs account. The developer sets how many lines each buyer gets per month or year.",
+  },
+}
+
+function scryboardServices(manifest) {
+  if (!Array.isArray(manifest.services)) return []
+  return manifest.services
+    .filter((s) => s && SCRYBOARD_SERVICE_TEXT[s.service])
+    .map((s) => ({
+      name: SCRYBOARD_SERVICE_TEXT[s.service].name,
+      reads: '',
+      writes: typeof s.why === 'string' ? s.why : '',
+      requiresPaidAccount: false,
+      costNote: SCRYBOARD_SERVICE_TEXT[s.service].note,
+      viaScryboard: true,
     }))
 }
 

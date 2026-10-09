@@ -443,11 +443,14 @@
         const block = document.createElement('div')
         block.className = 'external-disclosure'
         const title = document.createElement('strong')
-        title.textContent = '🌐 This app sends data to ' + service.name + ', outside Scryboard.'
+        title.textContent = service.viaScryboard
+          ? '🌐 This app uses ' + service.name + ' through Scryboard.'
+          : '🌐 This app sends data to ' + service.name + ', outside Scryboard.'
         block.appendChild(title)
         const lines = []
         if (service.reads) lines.push('Reads: ' + service.reads)
-        if (service.writes) lines.push('Writes: ' + service.writes)
+        if (service.writes) lines.push((service.viaScryboard ? 'For: ' : 'Writes: ') + service.writes)
+        if (service.viaScryboard && service.costNote) lines.push(service.costNote)
         for (const line of lines) {
           const p = document.createElement('p')
           p.textContent = line
