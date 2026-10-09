@@ -76,17 +76,18 @@ function externalServices(manifest) {
 }
 
 // The manifest's `services` block: providers the app reaches THROUGH
-// Scryboard, which holds the key (server-held keys, 0.2.9). Nothing to type
-// here -- the buyer only needs to know whose key pays. Shown in the same
+// Scryboard, which holds the app developer's key (server-held keys, 0.2.9;
+// every service runs on the developer's key since 0.2.10). Nothing to type
+// here -- the buyer only needs to know it's included. Shown in the same
 // install-prompt list as `external`, flagged viaScryboard.
 const SCRYBOARD_SERVICE_TEXT = {
   claude: {
     name: 'Claude (Anthropic)',
-    note: 'Uses the Anthropic key saved in your Scryboard account (Settings, then "Your own AI key"), billed to your own Anthropic account. No key is entered here.',
+    note: "Provided by the app's developer: you don't need an Anthropic account or key. The developer sets how much each buyer can use per month or year.",
   },
   elevenlabs_tts: {
     name: 'ElevenLabs voices',
-    note: "Provided by the app's developer: you don't need an ElevenLabs account. The developer sets how many lines each buyer gets per month or year.",
+    note: "Provided by the app's developer: you don't need an ElevenLabs account or key. The developer sets how many lines each buyer gets per month or year.",
   },
 }
 
