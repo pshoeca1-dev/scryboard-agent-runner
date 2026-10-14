@@ -186,9 +186,20 @@ function sameSite(a, b) {
 
 // Two installs are the same app when they have the same name from the same
 // Scryboard site -- e.g. Previously On in two campaigns. Their keys are
-// shared (see savedSecretsFor and updateAgentSecrets).
+// shared (see savedSecretsFor and updateAgentSecrets), but only within one
+// Scryboard account: see sameAccount.
 function sameApp(a, b) {
   return a.name === b.name && sameSite(a.baseUrl, b.baseUrl)
+}
+
+// Whether two installs belong to the same Scryboard account. `account` is
+// the opaque code /api/agent/info returns (Scryboard phase CZ); installs
+// without one (an older Scryboard, or a record not yet backfilled) never
+// match anything. Before 0.2.11 keys were shared by app name alone, so a
+// second account on the same computer was handed the first account's keys
+// -- a Kanka token, and with it that person's whole Kanka wiki.
+function sameAccount(a, b) {
+  return !!a.account && a.account === b.account
 }
 
 // Only the saved keys this manifest actually declares, non-empty.
@@ -429,6 +440,30 @@ class AgentManager {
     }
     if (backfilled) await this.persist()
     this.onListChange(this.list())
+    // Not awaited: a slow or offline Scryboard mustn't hold up startup.
+    this.backfillAccounts().catch(() => {})
+  }
+
+  // Installs from before 0.2.11 have no account code, so their keys are
+  // never reused (see sameAccount). Ask Scryboard once per such install
+  // which account its token is for. A revoked token, or a Scryboard without
+  // phase CZ, leaves it null -- the safe default.
+  async backfillAccounts() {
+    let changed = false
+    for (const record of this.records) {
+      if (record.account) continue
+      const token = this.tokens.get(record.id)
+      if (!token) continue
+      try {
+        const res = await fetch(`${record.baseUrl}/api/agent/info`, { headers: { Authorization: `Bearer ${token}` } })
+        if (!res.ok) continue
+        const account = ((await res.json()).data || {}).account
+        if (account) { record.account = account; changed = true }
+      } catch {
+        // Offline: try again next start.
+      }
+    }
+    if (changed) await this.persist()
   }
 
   list() {
@@ -499,12 +534,16 @@ class AgentManager {
       throw new Error(body.error || `Could not read that link (HTTP ${infoRes.status})`)
     }
     const info = (await infoRes.json()).data || {}
+    // Which Scryboard account this link is for (see sameAccount). Null from
+    // a Scryboard without phase CZ: then no saved keys are reused at all.
+    const account = info.account || null
 
     if (info.source === 'personal') {
       const pendingId = crypto.randomUUID()
       this.pendingInstalls.set(pendingId, {
         token,
         base,
+        account,
         agentName: info.agent_name || 'agent',
         campaignName: info.campaign_name || '',
       })
@@ -534,11 +573,20 @@ class AgentManager {
     // run the normal update against it, instead of making the buyer remove
     // the app and set it up again -- that would throw away its secrets and
     // its state/ folder (ledgers, caches) for nothing.
+    // A different account's install is never "the same app": two accounts
+    // can each have a campaign with the same name, and swapping one's
+    // token into the other's install would run it with the wrong keys.
+    // A record with no account code yet only matches by campaign id, never
+    // by campaign name alone.
+    const accountAllows = (r) => !account ||
+      (r.account ? r.account === account : !!(r.campaignId && campaignId && r.campaignId === campaignId))
     const existing = this.records.find((r) =>
-      !r.localPath && sameSite(r.baseUrl, base) && r.name === agentName && sameCampaign(r, campaignId, campaignName))
+      !r.localPath && sameSite(r.baseUrl, base) && r.name === agentName && sameCampaign(r, campaignId, campaignName) &&
+      accountAllows(r))
     if (existing) {
       existing.encryptedToken = encryptToken(token)
       if (campaignId && !existing.campaignId) existing.campaignId = campaignId
+      if (account) existing.account = account
       this.tokens.set(existing.id, token)
       await this.persist()
       // The old token's wake topic is dead; listen on the new one's.
@@ -568,10 +616,11 @@ class AgentManager {
     const declaredInputs = manifest.inputs ?? []
     const declaredCapabilities = manifest.capabilities ?? []
     const declaredExternal = externalServices(manifest)
-    // Keys belong to the app, not the campaign: installing an app this
-    // computer already runs for another campaign reuses the keys saved for
-    // it, instead of asking the buyer to paste them all again.
-    const saved = this.savedSecretsFor(agentName, base)
+    // Keys belong to the app and the account, not the campaign: installing
+    // an app this computer already runs for another campaign OF THE SAME
+    // ACCOUNT reuses the keys saved for it, instead of asking the buyer to
+    // paste them all again. Another account's keys are never offered.
+    const saved = this.savedSecretsFor(agentName, base, account)
     const savedValues = pickSecrets(manifest, saved?.values)
     const stillNeeded = requiredSecrets.filter((s) => !savedValues[s.key])
     // Capabilities force the prompt even when nothing else would -- a
@@ -581,11 +630,11 @@ class AgentManager {
     // second bill, is something the buyer sees here as well as on the
     // listing page.
     if (stillNeeded.length === 0 && declaredInputs.length === 0 && declaredCapabilities.length === 0 && declaredExternal.length === 0) {
-      return this.finishInstall({ files, manifest, token, base, agentName, campaignName, campaignId, secretValues: savedValues, inputFiles: {} })
+      return this.finishInstall({ files, manifest, token, base, account, agentName, campaignName, campaignId, secretValues: savedValues, inputFiles: {} })
     }
 
     const pendingId = crypto.randomUUID()
-    this.pendingInstalls.set(pendingId, { files, manifest, token, base, agentName, campaignName, campaignId, savedValues })
+    this.pendingInstalls.set(pendingId, { files, manifest, token, base, account, agentName, campaignName, campaignId, savedValues })
     return {
       needsSecrets: true,
       pendingId,
@@ -731,7 +780,7 @@ class AgentManager {
     for (const i of manifest.inputs ?? []) {
       if (!(await this.hasInputFiles(folderPath, i.key))) promptInputs.push(i)
     }
-    const saved = this.savedSecretsFor(pending.agentName, pending.base)
+    const saved = this.savedSecretsFor(pending.agentName, pending.base, pending.account)
     const savedValues = pickSecrets(manifest, saved?.values)
     const stillNeeded = requiredSecrets.filter((s) => !savedValues[s.key])
 
@@ -765,7 +814,7 @@ class AgentManager {
     }
   }
 
-  async finishInstall({ files, manifest, token, base, agentName, campaignName, campaignId, secretValues, inputFiles, localPath }) {
+  async finishInstall({ files, manifest, token, base, account, agentName, campaignName, campaignId, secretValues, inputFiles, localPath }) {
     const id = crypto.randomUUID()
     // A personal agent runs where the author keeps it. Nothing is written
     // into that folder except the packages junction and any input files
@@ -795,6 +844,9 @@ class AgentManager {
       name: agentName,
       campaignName,
       campaignId: campaignId || null,
+      // Opaque code for the Scryboard account (see sameAccount); null from
+      // a Scryboard without phase CZ.
+      account: account || null,
       baseUrl: base,
       entry: manifest.entry,
       version: manifest.version || null,
@@ -1022,7 +1074,8 @@ class AgentManager {
   async updateAgentSecrets(id, secretValues, applyToAll = false) {
     const record = this.records.find((r) => r.id === id)
     if (!record) throw new Error('App not found.')
-    const targets = applyToAll ? this.records.filter((r) => sameApp(r, record)) : [record]
+    // "Use for every campaign" means every campaign of this account only.
+    const targets = applyToAll ? this.records.filter((r) => r === record || (sameApp(r, record) && sameAccount(r, record))) : [record]
     for (const target of targets) {
       const declared = new Set((target.secrets || []).map((s) => s.key))
       const existing = this.secrets.get(target.id) || {}
@@ -1044,11 +1097,13 @@ class AgentManager {
   }
 
   // The keys saved for the most recently installed copy of this app (same
-  // name, same Scryboard site) on this computer, or null. Decrypted values
-  // stay in this process; the renderer only learns which keys are covered.
-  savedSecretsFor(agentName, base) {
+  // name, same Scryboard site, same Scryboard account) on this computer, or
+  // null. With no account code nothing is reused. Decrypted values stay in
+  // this process; the renderer only learns which keys are covered.
+  savedSecretsFor(agentName, base, account) {
+    if (!account) return null
     const candidates = this.records
-      .filter((r) => r.name === agentName && sameSite(r.baseUrl, base))
+      .filter((r) => r.name === agentName && sameSite(r.baseUrl, base) && sameAccount(r, { account }))
       .filter((r) => Object.keys(this.secrets.get(r.id) || {}).length > 0)
       .sort((a, b) => String(b.installedAt || '').localeCompare(String(a.installedAt || '')))
     const from = candidates[0]
