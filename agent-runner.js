@@ -310,6 +310,31 @@ async function removeStaleCodeFiles(dir, previousFiles, nextFiles) {
 // link resolved to. By id when both sides have one; otherwise by name,
 // which is all older Scryboard versions send -- and which can't tell two
 // campaigns with the same name apart.
+// A request that never got an answer (server down, no internet, wrong
+// address), as opposed to one Scryboard answered with an error.
+function isNetworkError(err) {
+  const code = err?.cause?.code || err?.code
+  return (err?.name === 'TypeError' && /fetch failed/i.test(err.message || '')) ||
+    ['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(code)
+}
+
+// What to show instead of a bare "fetch failed" when the Scryboard site an
+// app was installed from can't be reached. An app installed from a test
+// copy of Scryboard on this computer only ever talks to that copy, so once
+// it's switched off the app fails on every run (2026-10-15).
+function unreachableMessage(baseUrl) {
+  let local = false
+  try {
+    const host = new URL(baseUrl).hostname
+    local = host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost')
+  } catch {
+    // Not a URL: fall through to the general message.
+  }
+  return local
+    ? `Can't reach ${baseUrl}, the test copy of Scryboard this app was installed from. Start that test server, or remove this app and install it again from scryboard.net.`
+    : `Can't reach ${baseUrl}. Check your internet connection; it will try again on its next run.`
+}
+
 function sameCampaign(record, campaignId, campaignName) {
   if (record.campaignId && campaignId) return record.campaignId === campaignId
   return record.campaignName === campaignName
@@ -1303,12 +1328,16 @@ class AgentManager {
 
     let sessionActive = false
     let session = null
+    // Set when Scryboard itself can't be reached, so the app's own
+    // "fetch failed" below can say where it was trying to go.
+    let scryboardUnreachable = false
     try {
       session = await client.getActiveSession()
       sessionActive = !!session
-    } catch {
+    } catch (err) {
       // Fall back to the slower cadence rather than spinning on a broken
       // token or connection.
+      scryboardUnreachable = isNetworkError(err)
     }
 
     // Only agents that opted into `poll.encounterSeconds` pay for this --
@@ -1360,7 +1389,7 @@ class AgentManager {
         record.outputFiles = await scanOutputFiles(agentDir)
         this.setStatus(id, 'running', `Last ran ${new Date().toLocaleTimeString()}`)
       } catch (err) {
-        this.setStatus(id, 'error', err.message)
+        this.setStatus(id, 'error', scryboardUnreachable && isNetworkError(err) ? unreachableMessage(record.baseUrl) : err.message)
       } finally {
         for (const key of this.allSecretKeys) delete process.env[key]
       }
