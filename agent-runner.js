@@ -218,6 +218,22 @@ function pickSecrets(manifest, values) {
   return out
 }
 
+// What the install prompt shows per key (0.2.14): whether it's reusing a
+// saved one and from which campaign, by name, so a key saved for another
+// campaign is easy to spot -- 2026-10-16 a Kanka token from the DM's other
+// Kanka login was reused without anyone noticing and nothing imported.
+// Never the value: decrypted keys stay in this process.
+function promptSecrets(requiredSecrets, savedValues, saved) {
+  return requiredSecrets.map((s) => ({
+    key: s.key,
+    label: s.label || s.key,
+    help: s.help || '',
+    saved: !!savedValues[s.key],
+    savedFrom: savedValues[s.key] ? (saved && saved.campaignName) || 'another campaign' : null,
+    perCampaign: isPerCampaign(s),
+  }))
+}
+
 function isPerCampaign(secret) {
   return !!secret && secret.per_campaign === true
 }
@@ -675,7 +691,7 @@ class AgentManager {
       pendingId,
       agentName,
       reuseFrom: Object.keys(savedValues).length > 0 ? saved.campaignName || 'another campaign' : null,
-      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '', saved: !!savedValues[s.key] })),
+      secrets: promptSecrets(requiredSecrets, savedValues, saved),
       inputs: declaredInputs.map((i) => ({
         key: i.key,
         label: i.label || i.key,
@@ -832,7 +848,7 @@ class AgentManager {
       pendingId,
       agentName: pending.agentName,
       reuseFrom: Object.keys(savedValues).length > 0 ? saved.campaignName || 'another campaign' : null,
-      secrets: requiredSecrets.map((s) => ({ key: s.key, label: s.label || s.key, help: s.help || '', saved: !!savedValues[s.key] })),
+      secrets: promptSecrets(requiredSecrets, savedValues, saved),
       inputs: promptInputs.map((i) => ({
         key: i.key,
         label: i.label || i.key,

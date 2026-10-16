@@ -384,11 +384,17 @@
       document.getElementById('secretsInstall').textContent = info.isUpdate ? 'Continue update' : 'Install'
       secretsFields.innerHTML = ''
       inputsFields.innerHTML = ''
-      if (info.reuseFrom) {
+      const reused = info.secrets.filter((s) => s.saved)
+      if (reused.length > 0) {
+        // Names each reused key, so one saved for a different campaign (a
+        // token from another Kanka login, say) is noticed here, not after
+        // the app quietly finds nothing.
         const note = document.createElement('p')
         note.className = 'secret-help'
-        note.style.color = '#7fc98a'
-        note.textContent = 'Using the keys you already saved for this app (from ' + info.reuseFrom + '). Leave a field blank to keep using it, or type a different key to use it for this campaign only.'
+        note.style.color = '#e0c36a'
+        note.textContent = 'Reusing ' + (reused.length === 1 ? 'a key' : reused.length + ' keys') + ' you saved for ' +
+          (info.reuseFrom || 'another campaign') + ': ' + reused.map((s) => s.label).join(', ') +
+          '. If this campaign needs a different one (another account, for example), type it in.'
         secretsFields.appendChild(note)
       }
       for (const secret of info.secrets) {
@@ -400,6 +406,18 @@
         if (secret.saved) input.placeholder = 'Saved — leave blank to reuse it'
         label.appendChild(input)
         secretsFields.appendChild(label)
+        if (secret.saved) {
+          const from = document.createElement('p')
+          from.className = 'secret-help'
+          from.style.color = '#e0c36a'
+          from.textContent = '♻ Reusing the one saved for ' + (secret.savedFrom || 'another campaign') + '. Type a new one to use it for this campaign only.'
+          secretsFields.appendChild(from)
+        } else if (secret.perCampaign) {
+          const own = document.createElement('p')
+          own.className = 'secret-help'
+          own.textContent = 'Asked for each campaign separately: it belongs to this campaign only.'
+          secretsFields.appendChild(own)
+        }
         if (secret.help) {
           const help = document.createElement('p')
           help.className = 'secret-help'
