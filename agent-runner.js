@@ -202,14 +202,24 @@ function sameAccount(a, b) {
   return !!a.account && a.account === b.account
 }
 
-// Only the saved keys this manifest actually declares, non-empty.
+// Only the saved keys this manifest actually declares, non-empty, and not
+// marked `per_campaign`. A per-campaign secret names something belonging
+// to ONE campaign (Kanka Codex's Kanka world ID), so it is always asked for
+// fresh: on 2026-10-16 a new demo campaign silently got the Ashfall
+// campaign's Kanka world ID along with the account's Kanka key, and Kanka
+// Codex imported Ashfall's whole wiki into the demo.
 function pickSecrets(manifest, values) {
   const out = {}
   for (const s of manifest.secrets ?? []) {
+    if (isPerCampaign(s)) continue
     const v = values?.[s.key]
     if (v && String(v).trim()) out[s.key] = v
   }
   return out
+}
+
+function isPerCampaign(secret) {
+  return !!secret && secret.per_campaign === true
 }
 
 // Newest mtime across an agent's own code, used to cache-bust the dynamic
@@ -1101,6 +1111,7 @@ class AgentManager {
     if (!record) throw new Error('App not found.')
     // "Use for every campaign" means every campaign of this account only.
     const targets = applyToAll ? this.records.filter((r) => r === record || (sameApp(r, record) && sameAccount(r, record))) : [record]
+    const perCampaign = new Set((record.secrets || []).filter(isPerCampaign).map((s) => s.key))
     for (const target of targets) {
       const declared = new Set((target.secrets || []).map((s) => s.key))
       const existing = this.secrets.get(target.id) || {}
@@ -1109,6 +1120,9 @@ class AgentManager {
       for (const [key, value] of Object.entries(secretValues || {})) {
         if (!value || !String(value).trim()) continue
         if (target !== record && !declared.has(key)) continue
+        // A per-campaign key stays on the install it was typed into (see
+        // pickSecrets), whichever install's manifest says so.
+        if (target !== record && (perCampaign.has(key) || (target.secrets || []).some((s) => s.key === key && isPerCampaign(s)))) continue
         encryptedSecrets[key] = encryptToken(value)
         updatedValues[key] = value
         this.allSecretKeys.add(key)
