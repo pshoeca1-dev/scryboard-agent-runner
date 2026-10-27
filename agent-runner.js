@@ -11,6 +11,7 @@ const { pathToFileURL } = require('node:url')
 const { unzipSync, strFromU8 } = require('fflate')
 const { createClient } = require('./scryboard-client')
 const { WakeListener } = require('./wake-listener')
+const { createProblemReporter } = require('./problem-reporter')
 const { loadStore, saveStore, agentFilesDir, encryptToken, decryptToken } = require('./store')
 
 // Must stay in sync with VETTED_PACKAGES in src/lib/agentPackage.ts (the
@@ -408,6 +409,7 @@ class AgentManager {
     this.onListChange = onListChange || (() => {})
     this.playback = playback   // PlaybackManager (or null in a build without one)
     this.tickLock = Promise.resolve() // see withTickLock()
+    this.problems = createProblemReporter() // a failed tick -> the app's Recent problems on Scryboard
   }
 
   // Every installed agent polls on its own independent timer, but they all
@@ -639,6 +641,7 @@ class AgentManager {
       if (campaignId && !existing.campaignId) existing.campaignId = campaignId
       if (account) existing.account = account
       this.tokens.set(existing.id, token)
+      this.problems.forget(existing.id)
       await this.persist()
       // The old token's wake topic is dead; listen on the new one's.
       this.stopWaker(existing.id)
@@ -1211,6 +1214,7 @@ class AgentManager {
     this.timers.delete(id)
     this.tokens.delete(id)
     this.secrets.delete(id)
+    this.problems.forget(id)
     const record = this.records.find((r) => r.id === id)
     this.records = this.records.filter((r) => r.id !== id)
     await this.persist()
@@ -1419,7 +1423,14 @@ class AgentManager {
         record.outputFiles = await scanOutputFiles(agentDir)
         this.setStatus(id, 'running', `Last ran ${new Date().toLocaleTimeString()}`)
       } catch (err) {
-        this.setStatus(id, 'error', scryboardUnreachable && isNetworkError(err) ? unreachableMessage(record.baseUrl) : err.message)
+        const unreachable = scryboardUnreachable && isNetworkError(err)
+        this.setStatus(id, 'error', unreachable ? unreachableMessage(record.baseUrl) : err?.message)
+        // Tell the developer too (0.2.15), unless Scryboard itself is what
+        // can't be reached -- that report couldn't arrive anyway. Only the
+        // error's own text goes, never its stack (file paths on this computer).
+        if (!unreachable) {
+          this.problems.report({ appId: id, token, baseUrl: record.baseUrl, message: err?.message || String(err), where: 'tick' })
+        }
       } finally {
         for (const key of this.allSecretKeys) delete process.env[key]
       }
