@@ -241,6 +241,31 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     },
   }
 
+  // The dice service. roll: ask Scryboard for a roll, and it decides who rolls.
+  // The rest is for a dice app ("provides": ["dice"]): what's waiting (also its
+  // check-in), "I've got this one" before rolling, the dice that came up, and
+  // "can't do this one".
+  const dice = {
+    roll(notation, options = {}) {
+      return request('/api/agent/dice', {
+        method: 'POST',
+        body: JSON.stringify({ notation: String(notation), label: options.label }),
+      })
+    },
+    pending() {
+      return request('/api/agent/dice/requests')
+    },
+    claim(id) {
+      return request('/api/agent/dice/requests', { method: 'POST', body: JSON.stringify({ id, action: 'claim' }) })
+    },
+    answer(id, values) {
+      return request('/api/agent/dice/requests', { method: 'POST', body: JSON.stringify({ id, action: 'answer', values }) })
+    },
+    decline(id) {
+      return request('/api/agent/dice/requests', { method: 'POST', body: JSON.stringify({ id, action: 'decline' }) })
+    },
+  }
+
   // Play media on this machine. Requires the matching capability in the
   // agent's manifest ('plays_audio' for audio/*): the buyer consented to
   // that at install, and an app that never declared it gets an error, not
@@ -358,6 +383,7 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     writeEvent,
     getEvents,
     fight,
+    dice,
     playMedia,
     playAudio,
     stopMedia,

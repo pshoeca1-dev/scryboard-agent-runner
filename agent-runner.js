@@ -377,6 +377,9 @@ function sameCampaign(record, campaignId, campaignName) {
 const TICK_TIMEOUT_MS = 10 * 60 * 1000
 // Nudge-started ticks of one app are at least this far apart (0.2.7).
 const WAKE_GAP_MS = 3 * 1000
+// A dice app: an attack is a to-hit roll then a damage roll, and someone is
+// waiting on each one (Scryboard's dice service).
+const DICE_WAKE_GAP_MS = 250
 
 // Resolves/rejects with `promise`, or rejects with onTimeout()'s error
 // after `ms`. The original promise is not cancelled (JavaScript can't),
@@ -905,6 +908,7 @@ class AgentManager {
       entry: manifest.entry,
       version: manifest.version || null,
       poll: manifest.poll || {},
+      provides: manifest.provides || [],
       inputs: manifest.inputs || [],
       // Schema only (key/label/help/required) -- never values, those live
       // encrypted in encryptedSecrets. Lets the UI offer "Update keys" on
@@ -1078,6 +1082,7 @@ class AgentManager {
 
     record.entry = manifest.entry
     record.poll = manifest.poll || {}
+    record.provides = manifest.provides || []
     record.version = manifest.version || record.version || null
     record.inputs = manifest.inputs || record.inputs || []
     record.secrets = manifest.secrets || record.secrets || []
@@ -1303,7 +1308,8 @@ class AgentManager {
       return
     }
     const since = Date.now() - (this.lastWokenAt.get(id) ?? 0)
-    const delay = Math.max(0, WAKE_GAP_MS - since)
+    const isDiceApp = this.records.find((r) => r.id === id)?.provides?.includes('dice')
+    const delay = Math.max(0, (isDiceApp ? DICE_WAKE_GAP_MS : WAKE_GAP_MS) - since)
     const timer = this.timers.get(id)
     if (timer) clearTimeout(timer)
     this.timers.set(id, setTimeout(() => {

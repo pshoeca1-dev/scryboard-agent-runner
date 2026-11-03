@@ -1,4 +1,4 @@
-// Offline check of the client's fight.act: a fake fetch, no network.
+// Offline check of the client's fight and dice calls: a fake fetch, no network.
 //
 //   node scripts/dry-run-fight.js
 
@@ -29,7 +29,37 @@ async function main() {
   reply = { status: 403, body: { error: 'This app did not declare the combat write scope' } }
   await assert.rejects(client.fight.act('s1', action), /did not declare the combat write scope \(HTTP 403\)/)
 
-  console.log('fight.act dry run: all checks passed')
+  // Dice: asking for a roll, and a dice app's four calls.
+  const sent = async (fn, data) => {
+    calls.length = 0
+    reply = { status: 200, body: { data } }
+    const out = await fn()
+    assert.deepEqual(out, data)
+    return { url: calls[0].url, method: calls[0].opts.method, body: calls[0].opts.body ? JSON.parse(calls[0].opts.body) : null, auth: calls[0].opts.headers.Authorization }
+  }
+  const REQUESTS = 'http://scry.test/api/agent/dice/requests'
+
+  let call = await sent(() => client.dice.roll('1d20+4', { label: 'Goblin: Scimitar' }), { total: 17 })
+  assert.deepEqual([call.url, call.method, call.body], ['http://scry.test/api/agent/dice', 'POST', { notation: '1d20+4', label: 'Goblin: Scimitar' }])
+  assert.equal(call.auth, 'Bearer scry_tok')
+
+  call = await sent(() => client.dice.pending(), [{ id: 'r1' }])
+  assert.equal(call.url, REQUESTS)
+  assert.equal(call.body, null)
+
+  call = await sent(() => client.dice.claim('r1'), true)
+  assert.deepEqual([call.url, call.body], [REQUESTS, { id: 'r1', action: 'claim' }])
+
+  call = await sent(() => client.dice.answer('r1', [13]), true)
+  assert.deepEqual([call.url, call.body], [REQUESTS, { id: 'r1', action: 'answer', values: [13] }])
+
+  call = await sent(() => client.dice.decline('r1'), true)
+  assert.deepEqual([call.url, call.body], [REQUESTS, { id: 'r1', action: 'decline' }])
+
+  // A claim that's refused must come back as false, not get lost.
+  assert.equal(await sent(() => client.dice.claim('r2'), false).then(() => true), true)
+
+  console.log('fight and dice dry run: all checks passed')
 }
 
 main()
