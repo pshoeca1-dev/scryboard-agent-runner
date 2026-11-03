@@ -228,6 +228,19 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     return get('events', params)
   }
 
+  // Change the live fight: damage, heal, temp_hp, set, death_save, condition,
+  // turn, set_turn, add, remove, undo. Needs the "combat" write scope; a DM's
+  // copy can change anyone, a player's only their own character, and every
+  // change is logged and undoable. The same call a panel makes.
+  const fight = {
+    act(sessionId, action) {
+      return request('/api/agent/fight', {
+        method: 'POST',
+        body: JSON.stringify({ session_id: sessionId, action }),
+      })
+    },
+  }
+
   // Play media on this machine. Requires the matching capability in the
   // agent's manifest ('plays_audio' for audio/*): the buyer consented to
   // that at install, and an app that never declared it gets an error, not
@@ -344,6 +357,7 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     setSettingItems,
     writeEvent,
     getEvents,
+    fight,
     playMedia,
     playAudio,
     stopMedia,
