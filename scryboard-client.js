@@ -246,6 +246,11 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
   // check-in), "I've got this one" before rolling, the dice that came up, and
   // "can't do this one".
   const dice = {
+    // This Runner calls an app's answerDice() apart from its tick (0.2.18).
+    lane: true,
+    active() {
+      return request('/api/agent/dice/active')
+    },
     roll(notation, options = {}) {
       return request('/api/agent/dice', {
         method: 'POST',

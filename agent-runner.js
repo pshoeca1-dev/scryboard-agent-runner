@@ -380,6 +380,16 @@ const WAKE_GAP_MS = 3 * 1000
 // A dice app: an attack is a to-hit roll then a damage roll, and someone is
 // waiting on each one (Scryboard's dice service).
 const DICE_WAKE_GAP_MS = 250
+// The dice lane (0.2.18). Scryboard's dice service gives a dice app 4 seconds
+// to claim a roll, and an ordinary run can miss that: it waits its turn behind
+// other apps, and a lost nudge leaves it to the next timer. So an app that
+// exports answerDice() gets called separately, straight away on a nudge, and
+// during a live session on this timer too in case a nudge is lost.
+const DICE_CHECK_MS = 2500
+// How often to ask Scryboard whether this app is the campaign's chosen dice
+// app. Only the chosen one is checked every DICE_CHECK_MS.
+const DICE_ROLE_CHECK_MS = 60 * 1000
+const DICE_LANE_TIMEOUT_MS = 30 * 1000
 
 // Resolves/rejects with `promise`, or rejects with onTimeout()'s error
 // after `ms`. The original promise is not cancelled (JavaScript can't),
@@ -413,6 +423,13 @@ class AgentManager {
     this.playback = playback   // PlaybackManager (or null in a build without one)
     this.tickLock = Promise.resolve() // see withTickLock()
     this.problems = createProblemReporter() // a failed tick -> the app's Recent problems on Scryboard
+    // The dice lane (0.2.18) -- see runDiceLane().
+    this.diceBusy = new Set()       // ids whose answerDice is running right now
+    this.diceAgain = new Set()      // ids nudged during it: run once more when it ends
+    this.diceLive = new Set()       // ids whose campaign has a live session, from their last tick
+    this.diceChosen = new Map()     // id -> is it the campaign's chosen dice app?
+    this.diceRoleAt = new Map()     // id -> ms it last asked
+    this.diceTimer = null
   }
 
   // Every installed agent polls on its own independent timer, but they all
@@ -1258,6 +1275,7 @@ class AgentManager {
   scheduleLoop(id) {
     this.stopped.delete(id)
     this.startWaker(id)
+    this.startDiceTimer()
     this.runTick(id)
   }
 
@@ -1283,7 +1301,7 @@ class AgentManager {
         if (!res.ok) throw Object.assign(new Error(`wake-channel HTTP ${res.status}`), { status: res.status })
         return (await res.json()).data
       },
-      onWake: () => this.wake(id),
+      onWake: () => this.nudged(id),
     })
     this.wakers.set(id, waker)
     waker.start()
@@ -1293,6 +1311,81 @@ class AgentManager {
     const waker = this.wakers.get(id)
     if (waker) waker.stop()
     this.wakers.delete(id)
+  }
+
+  nudged(id) {
+    const record = this.records.find((r) => r.id === id)
+    if (record?.provides?.includes('dice')) {
+      // A nudge may mean the DM just switched it on: ask again soon.
+      this.diceRoleAt.delete(id)
+      this.runDiceLane(id)
+    }
+    this.wake(id)
+  }
+
+  // ---- The dice lane (0.2.18) ----
+  //
+  // Runs an app's answerDice(scryboard, { secrets }), when it exports one,
+  // apart from its tick: not waiting for withTickLock, and not reading the
+  // session first. Someone at the table is waiting on the answer.
+  //
+  // Because it runs outside the lock, it must never touch process.env, which
+  // at that moment may hold another app's keys for that app's tick. The app's
+  // own keys come as an argument instead. Apps already share this one process,
+  // so this is no new kind of exposure, but it's why a dice app gets a human
+  // look at review.
+  startDiceTimer() {
+    if (this.diceTimer) return
+    this.diceTimer = setInterval(() => this.diceCheck(), DICE_CHECK_MS)
+    this.diceTimer.unref?.()
+  }
+
+  diceCheck() {
+    const now = Date.now()
+    for (const record of this.records) {
+      const id = record.id
+      if (!record.enabled || this.stopped.has(id) || !record.provides?.includes('dice') || !this.diceLive.has(id)) continue
+      if (now - (this.diceRoleAt.get(id) ?? 0) >= DICE_ROLE_CHECK_MS) this.checkDiceRole(id, record, now)
+      if (this.diceChosen.get(id)) this.runDiceLane(id)
+    }
+  }
+
+  async checkDiceRole(id, record, now) {
+    this.diceRoleAt.set(id, now)
+    const token = this.tokens.get(id)
+    if (!token) return
+    try {
+      const client = createClient({ token, baseUrl: record.baseUrl, signal: AbortSignal.timeout(DICE_LANE_TIMEOUT_MS) })
+      this.diceChosen.set(id, (await client.dice.active()) === true)
+    } catch {
+      // Keep what we knew. The tick's own call below still checks in.
+    }
+  }
+
+  async runDiceLane(id) {
+    const record = this.records.find((r) => r.id === id)
+    const token = this.tokens.get(id)
+    if (!record?.enabled || !token || this.stopped.has(id) || !record.provides?.includes('dice')) return
+    if (this.diceBusy.has(id)) {
+      this.diceAgain.add(id)
+      return
+    }
+    this.diceBusy.add(id)
+    try {
+      const agentDir = agentDirFor(record, id)
+      const stamp = await maxCodeMtime(agentDir)
+      const mod = await import(`${pathToFileURL(path.join(agentDir, record.entry)).href}?v=${stamp}`)
+      if (typeof mod.answerDice !== 'function') return
+      const client = createClient({ token, baseUrl: record.baseUrl, signal: AbortSignal.timeout(DICE_LANE_TIMEOUT_MS) })
+      await mod.answerDice(client, { secrets: { ...(this.secrets.get(id) || {}) } })
+    } catch (err) {
+      if (!isNetworkError(err)) {
+        this.problems.report({ appId: id, token, baseUrl: record.baseUrl, message: err?.message || String(err), where: 'answerDice' })
+      }
+    } finally {
+      this.diceBusy.delete(id)
+      if (this.diceAgain.delete(id)) this.runDiceLane(id)
+    }
   }
 
   // Bring this app's next tick forward to now. A few quick clicks are one
@@ -1378,6 +1471,14 @@ class AgentManager {
       // Fall back to the slower cadence rather than spinning on a broken
       // token or connection.
       scryboardUnreachable = isNetworkError(err)
+    }
+
+    // A dice app: what the timer needs to know, and a check-in on every tick,
+    // so Scryboard knows it's there whether or not it's being checked often.
+    if (record.provides?.includes('dice')) {
+      if (sessionActive) this.diceLive.add(id)
+      else this.diceLive.delete(id)
+      this.runDiceLane(id)
     }
 
     // Only agents that opted into `poll.encounterSeconds` pay for this --
