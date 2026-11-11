@@ -228,6 +228,21 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     return get('events', params)
   }
 
+  // App memory (0.2.19): the app's own small store on Scryboard, one per
+  // install, the same store a browser app uses. Values are any JSON; a null
+  // value deletes the key; getState() with no key returns everything.
+  async function getState(key) {
+    return request(key == null ? '/api/agent/state' : `/api/agent/state?key=${encodeURIComponent(key)}`)
+  }
+
+  async function setState(key, value) {
+    if (!key) throw new Error('setState needs a `key`')
+    return request('/api/agent/state', {
+      method: 'POST',
+      body: JSON.stringify({ key, value: value === undefined ? null : value }),
+    })
+  }
+
   // Change the live fight: damage, heal, temp_hp, set, death_save, condition,
   // turn, set_turn, add, remove, undo. Needs the "combat" write scope; a DM's
   // copy can change anyone, a player's only their own character, and every
@@ -387,6 +402,8 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     setSettingItems,
     writeEvent,
     getEvents,
+    getState,
+    setState,
     fight,
     dice,
     playMedia,
