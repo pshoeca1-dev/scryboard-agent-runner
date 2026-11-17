@@ -12,6 +12,7 @@ const { unzipSync, strFromU8 } = require('fflate')
 const { createClient } = require('./scryboard-client')
 const { WakeListener } = require('./wake-listener')
 const { createProblemReporter } = require('./problem-reporter')
+const { createRevealer } = require('./file-reveal')
 const { loadStore, saveStore, agentFilesDir, encryptToken, decryptToken } = require('./store')
 
 // Must stay in sync with VETTED_PACKAGES in src/lib/agentPackage.ts (the
@@ -1457,7 +1458,13 @@ class AgentManager {
     // the abandoned tick still makes then fails at once, so it can't keep
     // writing after the Runner has given up on it.
     const tickAbort = new AbortController()
-    const client = createClient({ token, baseUrl: record.baseUrl, playback, signal: tickAbort.signal })
+    // One revealer per app, kept across ticks so its once-every-5-seconds
+    // limit holds (0.2.20).
+    this.revealers ??= new Map()
+    if (!this.revealers.has(id)) {
+      this.revealers.set(id, createRevealer({ outputDir: path.join(agentDirFor(record, id), 'output') }))
+    }
+    const client = createClient({ token, baseUrl: record.baseUrl, playback, signal: tickAbort.signal, showFile: this.revealers.get(id) })
 
     let sessionActive = false
     let session = null

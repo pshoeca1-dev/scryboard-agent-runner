@@ -29,7 +29,10 @@ const REQUEST_TIMEOUT_MS = 2 * 60 * 1000
 // `signal` is the tick's own abort signal from agent-runner.js: once a
 // tick is abandoned for running too long, every call it still makes
 // fails immediately instead of writing after the Runner gave up on it.
-function createClient({ token, baseUrl, playback = null, signal = null }) {
+// `showFile` (0.2.20) is this app's own file-reveal from file-reveal.js,
+// bound to its output/ folder by agent-runner.js; null where there is no
+// folder to show (the dice lane).
+function createClient({ token, baseUrl, playback = null, signal = null, showFile: reveal = null }) {
   function requestSignal() {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     return signal ? AbortSignal.any([signal, timeout]) : timeout
@@ -385,6 +388,13 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     return { audio, uses }
   }
 
+  // Opens the system file browser on one file in this app's output/
+  // folder (0.2.20). Never opens or runs the file itself.
+  async function showFile(relPath) {
+    if (!reveal) throw new Error('showFile is not available here')
+    return reveal(relPath)
+  }
+
   return {
     get,
     getActiveSession,
@@ -411,6 +421,7 @@ function createClient({ token, baseUrl, playback = null, signal = null }) {
     stopMedia,
     claude,
     speak,
+    showFile,
   }
 }
 
