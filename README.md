@@ -24,7 +24,9 @@ can declare a required secret (an API key, say), which the runner prompts
 for once at install time and stores the same secure way it already stores
 your Scryboard token.
 
-Still not here: auto-updating itself, code signing.
+Still not here: auto-updating itself. Code signing is built but switched
+off until there is an approved signing account (see "Signing the
+installer").
 
 ## Setup
 
@@ -106,9 +108,9 @@ prompt into the running app's code.
 - **Only a small, fixed list of packages** is supported —
   `@anthropic-ai/sdk`, `pdf-parse`, `jimp`, `zod`, `date-fns`. Anything
   else is refused at install time rather than half-working.
-- **Unsigned.** Windows will likely warn about running software from an
-  unknown publisher — expected until this is signed, which is deliberately
-  a later step (see the code-signing discussion from earlier).
+- **Unsigned, for now.** Windows warns about running software from an
+  unknown publisher until releases are signed. The build can sign; it is
+  waiting on an approved account (see "Signing the installer").
 
 ## The app icon
 
@@ -127,6 +129,41 @@ Developer Mode enabled — it ships macOS symlinks, and creating those needs a
 privilege a normal account doesn't have. That same step is what would
 normally put the icon on the `.exe`, so `scripts/after-pack.js` does the
 icon half on its own with `rcedit`.
+
+## Signing the installer
+
+Signing is what replaces Windows' "unknown publisher" warning with the
+company's name. It goes through Microsoft's signing service, Azure Artifact
+Signing (formerly Trusted Signing), and needs an account Microsoft has
+approved. Until then nothing changes: `npm.cmd run dist` says
+`signing is OFF` and builds the same unsigned installer as always.
+
+To switch it on, once the account's identity validation shows **Completed**
+and it has a **Public Trust** certificate profile:
+
+1. In the Azure portal, make an **app registration** (Microsoft Entra ID →
+   App registrations → New registration) and a **client secret** for it.
+   This is the sign-in the build uses, so nobody's own password is involved.
+2. On the Artifact Signing account, under Access control (IAM), give that
+   app registration the role **Artifact Signing Certificate Profile Signer**.
+3. Copy `signing.local.example.json` to `signing.local.json` in this folder
+   and replace each `PASTE-...` with the real value. The endpoint is the one
+   for the region the account was made in, e.g.
+   `https://eus.codesigning.azure.net` for East US.
+4. Run `npm.cmd run dist`. It says `signing is ON`, signs the app, the
+   uninstaller and the installer, then asks Windows to check the result. It
+   ends with `signed and timestamped by ...` for each file, or fails loudly.
+   A build that fails this check must not be released.
+
+`signing.local.json` holds a password. It is in `.gitignore`; never commit
+it, paste it into a chat, or put its values on a command line.
+
+A half-filled `signing.local.json` stops the build instead of quietly
+producing an unsigned installer. Delete the file to build unsigned.
+
+Not yet proven: a signed build against a real account. With made-up
+details the build gets as far as Microsoft's sign-in and is refused there,
+which is the furthest it can be tested without one.
 
 ## Releasing
 

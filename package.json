@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "build:icons": "electron scripts/build-icons.js",
-    "dist": "electron-builder --win"
+    "dist": "node scripts/dist.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

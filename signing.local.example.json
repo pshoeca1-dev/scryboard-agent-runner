@@ -1,0 +1,8 @@
+{
+  "endpoint": "PASTE-the-signing-account-endpoint, e.g. https://eus.codesigning.azure.net",
+  "codeSigningAccountName": "PASTE-the-artifact-signing-account-name",
+  "certificateProfileName": "PASTE-the-certificate-profile-name",
+  "tenantId": "PASTE-the-directory-tenant-id",
+  "clientId": "PASTE-the-application-client-id",
+  "clientSecret": "PASTE-the-client-secret-value"
+}
